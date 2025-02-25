@@ -8,35 +8,10 @@ on:
 
 jobs:
   # --- Validator Jobs ---
-  validate_pre_release:
-    name: Validate Pre-Release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Pre-Release Validation
-        run: |
-          echo "Simulate pre-release validation..."
-          echo "Done!"
-
-  template_validator:
-    name: Template Validator
-    runs-on: ubuntu-latest
-    needs: [validate_pre_release]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Template Validator Step
-        run: |
-          echo "Simulating template validation..."
-          echo "All good!"
 
   codeowners_validator:
     name: CodeOwners Validator
     runs-on: ubuntu-latest
-    needs: [template_validator]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,7 +24,6 @@ jobs:
   version_mods_validator:
     name: Version & Mods Validator
     runs-on: ubuntu-latest
-    needs: [template_validator]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,12 +32,24 @@ jobs:
         run: |
           echo "Simulating version & mods checks..."
           echo "Looks fine!"
+  
+  template_validator:
+    name: Template Validator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Template Validator Step
+        run: |
+          echo "Simulating template validation..."
+          echo "All good!"
 
   # --- Final Build Job ---
   build:
     name: Build Artifacts
     # This job depends on all validator jobs
-    needs: [validate_pre_release, codeowners_validator, version_mods_validator]
+    needs: [codeowners_validator, version_mods_validator, template_validator]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -130,7 +116,9 @@ jobs:
             IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
               "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
             echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
-          
+
+          fi
+
       - name: Send Build Metadata to RabbitMQ
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
