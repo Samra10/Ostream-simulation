@@ -1,0 +1,129 @@
+name: Simulated Customer Build Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # --- Stage 1: Pre-Build Checks ---
+  pre_build_checks:
+    name: Pre-Build Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Template Validator
+        uses: ./.github/workflows/pullrequest-templateValidator.yml@main
+        with:
+          dummy_input: "simulate"
+
+      - name: Run Version & Mods Validator
+        uses: ./.github/workflows/pullrequest-validate-Version-mods.yml@main
+        with:
+          dummy_input: "simulate"
+
+      - name: Validate CodeOwners
+        uses: ./.github/workflows/validate-CodeOwners.yml@main
+        with:
+          dummy_input: "simulate"
+
+
+  # --- Stage 2: Build and Publish Artifacts ---
+  build:
+    name: Build Artifacts
+    needs: pre_build_checks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        artifact:
+          - type: docker
+            name: docker-image
+            dockerfile: './Dockerfile'
+            context: '.'
+          - type: jar
+            name: service1
+            module: 'service1'
+          - type: war
+            name: war-service1
+            module: 'war-service1'
+          - type: frontend
+            name: frontend-app
+            dockerfile: './frontend/Dockerfile'
+            context: './frontend'
+    env:
+      TIMESTAMP: ${{ github.run_id }}   # For simulation, using run_id as a timestamp/tag
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Build Artifact
+        run: |
+          if [ "${{ matrix.artifact.type }}" = "docker" ]; then
+            echo "Building Docker image..."
+            docker build -t "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+              -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
+            docker push "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+              "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+            echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+
+          elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
+            echo "Building JAR for module: ${{ matrix.artifact.module }}"
+            cd ${{ matrix.artifact.module }}
+            mvn clean package -DskipTests
+            cd ..
+            JAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.jar | head -n 1)
+            echo "Pushing JAR to JFrog Artifactory..."
+            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
+              -T "$JAR_FILE" \
+              "${{ secrets.JFROG_URL }}/my-jar-repo/${{ matrix.artifact.module }}/$(basename $JAR_FILE)"
+
+          elif [ "${{ matrix.artifact.type }}" = "war" ]; then
+            echo "Building WAR for module: ${{ matrix.artifact.module }}"
+            cd ${{ matrix.artifact.module }}
+            mvn clean package -DskipTests
+            cd ..
+            WAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.war | head -n 1)
+            echo "Pushing WAR to JFrog Artifactory..."
+            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
+              -T "$WAR_FILE" \
+              "${{ secrets.JFROG_URL }}/my-war-repo/${{ matrix.artifact.module }}/$(basename $WAR_FILE)"
+
+          elif [ "${{ matrix.artifact.type }}" = "frontend" ]; then
+            echo "Building Frontend Docker image..."
+            docker build -t "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+              -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
+            docker push "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+              "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+            echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+          fi
+
+      - name: Send Build Metadata to RabbitMQ
+        env:
+          RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
+          RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+          RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
+        run: |
+          if [ "${{ matrix.artifact.type }}" = "docker" ] || [ "${{ matrix.artifact.type }}" = "frontend" ]; then
+            PAYLOAD=$(jq -n \
+              --arg artifact "${{ matrix.artifact.name }}" \
+              --arg tag "$TIMESTAMP" \
+              --arg digest "sha256:${{ env.IMAGE_DIGEST }}" \
+              '{artifact: $artifact, imageTag: $tag, digest: $digest}')
+          elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
+            PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "jar"}')
+          elif [ "${{ matrix.artifact.type }}" = "war" ]; then
+            PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "war"}')
+          fi
+
+          echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
+          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
+              -H "Content-Type: application/json" \
+              -X POST "$RABBITMQ_URL/api/exchanges/%2F/build-events/publish" \
+              --data-binary "$(jq -n --arg payload "$PAYLOAD" --arg routing_key "build.event" \
+                '{vhost: "/", name: "build-events", routing_key: $routing_key, payload: $payload, payload_encoding: "string"}')"
