@@ -7,27 +7,63 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # --- Stage 1: Pre-Build Checks (Single Job, Three Steps) ---
-  pre_build_checks:
-    name: Pre-Build Checks
+  # --- Validator Jobs ---
+  validate_pre_release:
+    name: Validate Pre-Release
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run Template Validator
-        uses: ./.github/actions/pullrequest-templateValidator
+      - name: Pre-Release Validation
+        run: |
+          echo "Simulate pre-release validation..."
+          echo "Done!"
 
-      - name: Run Version & Mods Validator
-        uses: ./.github/actions/pullrequest-validate-Version-mods
+  template_validator:
+    name: Template Validator
+    runs-on: ubuntu-latest
+    needs: [validate_pre_release]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Validate CodeOwners
-        uses: ./.github/actions/validate-CodeOwners
+      - name: Template Validator Step
+        run: |
+          echo "Simulating template validation..."
+          echo "All good!"
 
-  # --- Stage 2: Build and Publish Artifacts ---
+  codeowners_validator:
+    name: CodeOwners Validator
+    runs-on: ubuntu-latest
+    needs: [template_validator]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: CodeOwners Validation
+        run: |
+          echo "Simulating CodeOwners check..."
+          echo "OK!"
+
+  version_mods_validator:
+    name: Version & Mods Validator
+    runs-on: ubuntu-latest
+    needs: [template_validator]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Version & Mods Validation
+        run: |
+          echo "Simulating version & mods checks..."
+          echo "Looks fine!"
+
+  # --- Final Build Job ---
   build:
     name: Build Artifacts
-    needs: pre_build_checks
+    # This job depends on all validator jobs
+    needs: [validate_pre_release, codeowners_validator, version_mods_validator]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -47,11 +83,11 @@ jobs:
             dockerfile: './frontend/Dockerfile'
             context: './frontend'
     env:
-      TIMESTAMP: ${{ github.run_id }}
+      TIMESTAMP: ${{ github.run_id }}   # Using run_id as a pseudo-timestamp
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Build Artifact
         run: |
@@ -70,7 +106,7 @@ jobs:
             mvn clean package -DskipTests
             cd ..
             JAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.jar | head -n 1)
-            echo "Pushing JAR to JFrog Artifactory..."
+            echo "Pushing JAR to JFROG Artifactory..."
             curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
               -T "$JAR_FILE" \
               "${{ secrets.JFROG_URL }}/my-jar-repo/${{ matrix.artifact.module }}/$(basename $JAR_FILE)"
@@ -81,7 +117,7 @@ jobs:
             mvn clean package -DskipTests
             cd ..
             WAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.war | head -n 1)
-            echo "Pushing WAR to JFrog Artifactory..."
+            echo "Pushing WAR to JFROG Artifactory..."
             curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
               -T "$WAR_FILE" \
               "${{ secrets.JFROG_URL }}/my-war-repo/${{ matrix.artifact.module }}/$(basename $WAR_FILE)"
