@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # --- Stage 1: Pre-Build Checks ---
+  # --- Stage 1: Pre-Build Checks (Single Job, Three Steps) ---
   pre_build_checks:
     name: Pre-Build Checks
     runs-on: ubuntu-latest
@@ -16,20 +16,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Template Validator
-        uses: ./.github/workflows/pullrequest-templateValidator.yml@main
-        with:
-          dummy_input: "simulate"
+        uses: ./.github/actions/pullrequest-templateValidator
 
       - name: Run Version & Mods Validator
-        uses: ./.github/workflows/pullrequest-validate-Version-mods.yml@main
-        with:
-          dummy_input: "simulate"
+        uses: ./.github/actions/pullrequest-validate-Version-mods
 
       - name: Validate CodeOwners
-        uses: ./.github/workflows/validate-CodeOwners.yml@main
-        with:
-          dummy_input: "simulate"
-
+        uses: ./.github/actions/validate-CodeOwners
 
   # --- Stage 2: Build and Publish Artifacts ---
   build:
@@ -54,7 +47,7 @@ jobs:
             dockerfile: './frontend/Dockerfile'
             context: './frontend'
     env:
-      TIMESTAMP: ${{ github.run_id }}   # For simulation, using run_id as a timestamp/tag
+      TIMESTAMP: ${{ github.run_id }}
 
     steps:
       - name: Checkout Repository
@@ -101,8 +94,7 @@ jobs:
             IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
               "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
             echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
-          fi
-
+          
       - name: Send Build Metadata to RabbitMQ
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}

@@ -1,0 +1,11 @@
+name: CodeOwners Validator
+description: "Simulate CodeOwners validation"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Simulate CodeOwners Validation
+      shell: bash
+      run: |
+        echo "Verifying CodeOwners..."
+        echo "CodeOwners validation passed!"

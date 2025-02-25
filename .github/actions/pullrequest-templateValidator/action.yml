@@ -1,0 +1,11 @@
+name: Pull Request Template Validator
+description: "Simulate template validation"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Simulate Template Validation
+      shell: bash
+      run: |
+        echo "Running template validation..."
+        echo "All good!"
