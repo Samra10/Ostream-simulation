@@ -80,6 +80,86 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
       
+      # Create placeholder Java modules if they don't exist
+      - name: Create Java Test Modules
+        if: matrix.artifact.type == 'jar' || matrix.artifact.type == 'war'
+        run: |
+          MODULE="${{ matrix.artifact.module }}"
+          
+          # Check if the module directory exists
+          if [ ! -d "$MODULE" ]; then
+            echo "Creating test module: $MODULE"
+            mkdir -p $MODULE/src/main/java/com/example
+            mkdir -p $MODULE/target
+            
+            # Create a simple Java class - FIXED HEREDOC
+            cat > $MODULE/src/main/java/com/example/HelloWorld.java << 'ENDCLASS'
+          package com.example;
+
+          public class HelloWorld {
+              public static void main(String[] args) {
+                  System.out.println("Hello, World!");
+              }
+          }
+          ENDCLASS
+                      
+                      # Create a basic pom.xml file
+                      if [ "${{ matrix.artifact.type }}" = "jar" ]; then
+                        cat > $MODULE/pom.xml << 'ENDPOM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                    http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.example</groupId>
+            <artifactId>MODULE_NAME</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <maven.compiler.source>11</maven.compiler.source>
+              <maven.compiler.target>11</maven.compiler.target>
+            </properties>
+          </project>
+          ENDPOM
+              # Replace placeholder with actual module name
+              sed -i "s/MODULE_NAME/$MODULE/g" $MODULE/pom.xml
+              
+              # Create a simple JAR file
+              echo "Creating test JAR file..."
+              jar -cf $MODULE/target/$MODULE-1.0.0.jar -C $MODULE/src .
+              
+            else
+              cat > $MODULE/pom.xml << 'ENDPOM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                    http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.example</groupId>
+            <artifactId>MODULE_NAME</artifactId>
+            <version>1.0.0</version>
+            <packaging>war</packaging>
+            <properties>
+              <maven.compiler.source>11</maven.compiler.source>
+              <maven.compiler.target>11</maven.compiler.target>
+            </properties>
+          </project>
+          ENDPOM
+              # Replace placeholder with actual module name
+              sed -i "s/MODULE_NAME/$MODULE/g" $MODULE/pom.xml
+              
+              # Create a simple WAR structure
+              mkdir -p $MODULE/src/main/webapp/WEB-INF
+              echo "<web-app/>" > $MODULE/src/main/webapp/WEB-INF/web.xml
+              echo "<html><body>Hello World</body></html>" > $MODULE/src/main/webapp/index.html
+              
+              # Create a simple WAR file
+              echo "Creating test WAR file..."
+              jar -cf $MODULE/target/$MODULE-1.0.0.war -C $MODULE/src/main/webapp .
+            fi
+          else
+            echo "Module $MODULE already exists, skipping creation"
+          fi
+
       # Login to Docker Hub for frontend and docker type builds
       - name: Login to Docker Hub
         if: matrix.artifact.type == 'frontend' || matrix.artifact.type == 'docker'
@@ -111,7 +191,7 @@ jobs:
           
           echo "Docker image pushed successfully to ${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}"
 
-      # Build and publish JAR
+      # Build and publish JAR - FIXED POM HANDLING
       - name: Build and Publish JAR
         if: matrix.artifact.type == 'jar'
         run: |
@@ -140,34 +220,48 @@ jobs:
           if [ -n "${{ secrets.ARTIFACTORY_URL }}" ]; then
             # Push to JFrog Artifactory if configured
             echo "Publishing to JFrog Artifactory..."
+            JFROG_FULL_URL="${{ secrets.ARTIFACTORY_URL }}"
+            # Ensure it has a protocol prefix
+            if [[ "$JFROG_FULL_URL" != http* ]]; then
+              JFROG_FULL_URL="https://$JFROG_FULL_URL"
+            fi
+            
             curl -u "${{ secrets.ARTIFACTORY_USERNAME }}:${{ secrets.ARTIFACTORY_PASSWORD }}" \
               -T "$JAR_FILE" \
-              "${{ secrets.ARTIFACTORY_URL }}/my-jar-repo/$MODULE/$(basename $JAR_FILE)"
+              "$JFROG_FULL_URL/my-jar-repo/$MODULE/$(basename $JAR_FILE)"
           else
             # Use GitHub Packages as fallback
             echo "Publishing to GitHub Packages..."
             # First, create a settings.xml for Maven
             mkdir -p ~/.m2
-            echo "<settings>
-              <servers>
-                <server>
-                  <id>github</id>
-                  <username>${{ github.actor }}</username>
-                  <password>${{ secrets.GITHUB_TOKEN }}</password>
-                </server>
-              </servers>
-            </settings>" > ~/.m2/settings.xml
-            
-            # Add GitHub Packages repository to pom.xml
-            TEMP_POM=$(mktemp)
-            cat $MODULE/pom.xml > $TEMP_POM
-            echo "<distributionManagement>
-              <repository>
+            cat > ~/.m2/settings.xml << 'ENDSETTINGS'
+          <settings>
+            <servers>
+              <server>
                 <id>github</id>
-                <name>GitHub Packages</name>
-                <url>https://maven.pkg.github.com/${{ github.repository }}</url>
-              </repository>
-            </distributionManagement>" >> $TEMP_POM
+                <username>${GITHUB_ACTOR}</username>
+                <password>${GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          ENDSETTINGS
+            
+            # Replace environment variables
+            sed -i "s/\${GITHUB_ACTOR}/${{ github.actor }}/g" ~/.m2/settings.xml
+            sed -i "s/\${GITHUB_TOKEN}/${{ secrets.GITHUB_TOKEN }}/g" ~/.m2/settings.xml
+            
+            # Create a modified pom with distribution management section
+            TEMP_POM="$MODULE/modified-pom.xml"
+            cp $MODULE/pom.xml $TEMP_POM
+            
+            # Check if the pom already has a project end tag
+            if grep -q "</project>" $TEMP_POM; then
+              # Insert before the closing project tag
+              sed -i 's|</project>|<distributionManagement><repository><id>github</id><name>GitHub Packages</name><url>https://maven.pkg.github.com/${{ github.repository }}</url></repository></distributionManagement></project>|' $TEMP_POM
+            else
+              # Add at the end
+              echo "<distributionManagement><repository><id>github</id><name>GitHub Packages</name><url>https://maven.pkg.github.com/${{ github.repository }}</url></repository></distributionManagement></project>" >> $TEMP_POM
+            fi
             
             # Deploy using Maven
             mvn -B deploy:deploy-file \
@@ -183,7 +277,7 @@ jobs:
           
           echo "JAR artifact published successfully"
 
-      # Build and publish WAR
+      # Build and publish WAR - FIXED POM HANDLING
       - name: Build and Publish WAR
         if: matrix.artifact.type == 'war'
         run: |
@@ -212,34 +306,48 @@ jobs:
           if [ -n "${{ secrets.ARTIFACTORY_URL }}" ]; then
             # Push to JFrog Artifactory if configured
             echo "Publishing to JFrog Artifactory..."
+            JFROG_FULL_URL="${{ secrets.ARTIFACTORY_URL }}"
+            # Ensure it has a protocol prefix
+            if [[ "$JFROG_FULL_URL" != http* ]]; then
+              JFROG_FULL_URL="https://$JFROG_FULL_URL"
+            fi
+            
             curl -u "${{ secrets.ARTIFACTORY_USERNAME }}:${{ secrets.ARTIFACTORY_PASSWORD }}" \
               -T "$WAR_FILE" \
-              "${{ secrets.ARTIFACTORY_URL }}/my-war-repo/$MODULE/$(basename $WAR_FILE)"
+              "$JFROG_FULL_URL/my-war-repo/$MODULE/$(basename $WAR_FILE)"
           else
             # Use GitHub Packages as fallback
             echo "Publishing to GitHub Packages..."
             # First, create a settings.xml for Maven
             mkdir -p ~/.m2
-            echo "<settings>
-              <servers>
-                <server>
-                  <id>github</id>
-                  <username>${{ github.actor }}</username>
-                  <password>${{ secrets.GITHUB_TOKEN }}</password>
-                </server>
-              </servers>
-            </settings>" > ~/.m2/settings.xml
-            
-            # Add GitHub Packages repository to pom.xml
-            TEMP_POM=$(mktemp)
-            cat $MODULE/pom.xml > $TEMP_POM
-            echo "<distributionManagement>
-              <repository>
+            cat > ~/.m2/settings.xml << 'ENDSETTINGS'
+          <settings>
+            <servers>
+              <server>
                 <id>github</id>
-                <name>GitHub Packages</name>
-                <url>https://maven.pkg.github.com/${{ github.repository }}</url>
-              </repository>
-            </distributionManagement>" >> $TEMP_POM
+                <username>${GITHUB_ACTOR}</username>
+                <password>${GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          ENDSETTINGS
+            
+            # Replace environment variables
+            sed -i "s/\${GITHUB_ACTOR}/${{ github.actor }}/g" ~/.m2/settings.xml
+            sed -i "s/\${GITHUB_TOKEN}/${{ secrets.GITHUB_TOKEN }}/g" ~/.m2/settings.xml
+            
+            # Create a modified pom with distribution management section
+            TEMP_POM="$MODULE/modified-pom.xml"
+            cp $MODULE/pom.xml $TEMP_POM
+            
+            # Check if the pom already has a project end tag
+            if grep -q "</project>" $TEMP_POM; then
+              # Insert before the closing project tag
+              sed -i 's|</project>|<distributionManagement><repository><id>github</id><name>GitHub Packages</name><url>https://maven.pkg.github.com/${{ github.repository }}</url></repository></distributionManagement></project>|' $TEMP_POM
+            else
+              # Add at the end
+              echo "<distributionManagement><repository><id>github</id><name>GitHub Packages</name><url>https://maven.pkg.github.com/${{ github.repository }}</url></repository></distributionManagement></project>" >> $TEMP_POM
+            fi
             
             # Deploy using Maven
             mvn -B deploy:deploy-file \
