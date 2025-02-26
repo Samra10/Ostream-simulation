@@ -15,9 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: CodeOwners Validation
-        run: |
-          echo "Simulating CodeOwners check..."
-          echo "OK!"
+        uses: ./.github/actions/validate-CodeOwners
 
   version_mods_validator:
     name: Version & Mods Validator
@@ -26,9 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Version & Mods Validation
-        run: |
-          echo "Simulating version & mods checks..."
-          echo "Looks fine!"
+        uses: ./.github/actions/pullrequest-validate-Version-mods
 
   template_validator:
     name: Template Validator
@@ -37,9 +33,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Template Validator Step
-        run: |
-          echo "Simulating template validation..."
-          echo "All good!"
+        uses: ./.github/actions/pullrequest-templateValidator
           
   # --- Docker Image Builds ---
   build-docker:
