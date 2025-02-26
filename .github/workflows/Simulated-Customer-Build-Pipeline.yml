@@ -94,7 +94,7 @@ jobs:
           RABBITMQ_QUEUE: "githubactions-ssd"
           RABBITMQ_EXCHANGE: "githubactions.events"
           RABBITMQ_ROUTING_KEY: "githubactions-ssd"
-          ORG_NAME: "opsmx"
+          ORG_NAME: "ortseam"
         run: |
           # Skip if credentials missing
           if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
@@ -314,7 +314,7 @@ jobs:
           RABBITMQ_QUEUE: "githubactions-ssd"
           RABBITMQ_EXCHANGE: "githubactions.events"
           RABBITMQ_ROUTING_KEY: "githubactions-ssd"
-          ORG_NAME: "opsmx"
+          ORG_NAME: "ortseam"
         run: |
           # Skip if credentials missing
           if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
