@@ -412,4 +412,3 @@ jobs:
               --data-binary "$PAYLOAD"
           
           echo "Notification sent for $TYPE: $MODULE"
-
