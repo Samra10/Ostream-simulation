@@ -334,6 +334,8 @@ jobs:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
+          RABBITMQ_EXCHANGE: "build-events" # Change this if you have a specific exchange
+          RABBITMQ_ROUTING_KEY: "build.event" # Change this if you have a specific routing key
         run: |
           # Check if RabbitMQ credentials are set
           if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
@@ -341,30 +343,150 @@ jobs:
             exit 0
           fi
           
-          # Create appropriate payload based on artifact type
+          # Create the inner message payload with all required fields
+          echo "Preparing RabbitMQ message for ${{ matrix.artifact.type }} artifact..."
+          
+          # Common GitHub metadata for all artifact types
+          JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
           if [ "${{ matrix.artifact.type }}" = "frontend" ]; then
-            PAYLOAD=$(jq -n \
-              --arg artifact "${{ matrix.artifact.name }}" \
-              --arg tag "${TIMESTAMP}" \
-              --arg digest "sha256:${{ env.IMAGE_DIGEST }}" \
-              '{artifact: $artifact, imageTag: $tag, digest: $digest}')
+            # For Docker images
+            IMAGE_NAME="${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}"
+            MESSAGE=$(jq -n \
+              --arg image "$IMAGE_NAME:${TIMESTAMP}" \
+              --arg imageTag "${TIMESTAMP}" \
+              --arg imgsha "sha256:${{ env.IMAGE_DIGEST }}" \
+              --arg jobId "${{ github.job }}" \
+              --arg buildNumber "${{ github.run_number }}" \
+              --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
+              --arg gitCommit "${{ github.sha }}" \
+              --arg gitBranch "${{ github.ref_name }}" \
+              --arg jobUrl "$JOB_URL" \
+              --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg buildUser "${{ github.actor }}" \
+              --arg visibility "public" \
+              --arg organization "Samra10" \
+              --arg workflowName "Simulated Customer Build Pipeline" \
+              '{
+                image: $image,
+                imageTag: $imageTag,
+                imgsha: $imgsha,
+                jobId: $jobId,
+                buildNumber: $buildNumber,
+                gitUrl: $gitUrl,
+                gitCommit: $gitCommit,
+                gitBranch: $gitBranch,
+                jobUrl: $jobUrl,
+                buildTime: $buildTime,
+                buildUser: $buildUser,
+                diffCommits: "",
+                visibility: $visibility,
+                parentRepo: "",
+                licenseName: "",
+                organization: $organization,
+                workflowName: $workflowName,
+                applicationTags: "frontend,nginx"
+              }')
           elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
-            PAYLOAD=$(jq -n \
+            # For JAR artifacts
+            MESSAGE=$(jq -n \
               --arg artifact "${{ matrix.artifact.module }}" \
               --arg type "jar" \
               --arg version "1.0.0" \
-              '{artifact: $artifact, type: $type, version: $version}')
+              --arg jobId "${{ github.job }}" \
+              --arg buildNumber "${{ github.run_number }}" \
+              --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
+              --arg gitCommit "${{ github.sha }}" \
+              --arg gitBranch "${{ github.ref_name }}" \
+              --arg jobUrl "$JOB_URL" \
+              --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg buildUser "${{ github.actor }}" \
+              --arg organization "Samra10" \
+              --arg workflowName "Simulated Customer Build Pipeline" \
+              '{
+                artifact: $artifact,
+                type: $type,
+                version: $version,
+                jobId: $jobId,
+                buildNumber: $buildNumber,
+                gitUrl: $gitUrl,
+                gitCommit: $gitCommit,
+                gitBranch: $gitBranch,
+                jobUrl: $jobUrl,
+                buildTime: $buildTime,
+                buildUser: $buildUser,
+                diffCommits: "",
+                visibility: "public",
+                organization: $organization,
+                workflowName: $workflowName,
+                applicationTags: "java,jar"
+              }')
           elif [ "${{ matrix.artifact.type }}" = "war" ]; then
-            PAYLOAD=$(jq -n \
+            # For WAR artifacts
+            MESSAGE=$(jq -n \
               --arg artifact "${{ matrix.artifact.module }}" \
               --arg type "war" \
               --arg version "1.0.0" \
-              '{artifact: $artifact, type: $type, version: $version}')
+              --arg jobId "${{ github.job }}" \
+              --arg buildNumber "${{ github.run_number }}" \
+              --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
+              --arg gitCommit "${{ github.sha }}" \
+              --arg gitBranch "${{ github.ref_name }}" \
+              --arg jobUrl "$JOB_URL" \
+              --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+              --arg buildUser "${{ github.actor }}" \
+              --arg organization "Samra10" \
+              --arg workflowName "Simulated Customer Build Pipeline" \
+              '{
+                artifact: $artifact,
+                type: $type,
+                version: $version,
+                jobId: $jobId,
+                buildNumber: $buildNumber,
+                gitUrl: $gitUrl,
+                gitCommit: $gitCommit,
+                gitBranch: $gitBranch,
+                jobUrl: $jobUrl,
+                buildTime: $buildTime,
+                buildUser: $buildUser,
+                diffCommits: "",
+                visibility: "public",
+                organization: $organization,
+                workflowName: $workflowName,
+                applicationTags: "java,war"
+              }')
           fi
-
+          
+          # Create the outer payload with the required RabbitMQ API structure
+          PAYLOAD=$(jq -n \
+              --arg vhost "/" \
+              --arg name "$RABBITMQ_EXCHANGE" \
+              --argjson properties '{}' \
+              --arg routing_key "$RABBITMQ_ROUTING_KEY" \
+              --arg delivery_mode "2" \
+              --arg payload "$MESSAGE" \
+              --arg payload_encoding "string" \
+              '{
+                vhost: $vhost,
+                name: $name,
+                properties: $properties,
+                routing_key: $routing_key,
+                delivery_mode: $delivery_mode,
+                payload: $payload,
+                payload_encoding: $payload_encoding
+              }')
+          
           echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
-          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
+          curl -v -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
-              -X POST "$RABBITMQ_URL/api/exchanges/%2F/build-events/publish" \
-              --data-binary "$(jq -n --arg payload "$PAYLOAD" --arg routing_key "build.event" \
-                '{vhost: "/", name: "build-events", routing_key: $routing_key, payload: $payload, payload_encoding: "string"}')"
+              -X POST "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE/publish" \
+              --data-binary "$PAYLOAD"
+              
+          # Check curl exit status
+          if [ $? -eq 0 ]; then
+            echo "Successfully sent notification to RabbitMQ"
+          else
+            echo "Failed to send notification to RabbitMQ"
+            # Don't fail the build if RabbitMQ notification fails
+            # exit 1
+          fi
