@@ -54,6 +54,10 @@ jobs:
             name: frontend-app
             dockerfile: './frontend/Dockerfile'
             context: './frontend'
+          - type: docker  # New artifact type for test-app
+            name: test-app
+            dockerfile: './test-app/Dockerfile'
+            context: './test-app'
           - type: jar
             name: service1
             module: 'service1'
@@ -152,19 +156,19 @@ jobs:
             echo "Module $MODULE already exists, skipping creation"
           fi
 
-      # Login to Docker Hub for frontend
+      # Login to Docker Hub for frontend and docker type builds
       - name: Login to Docker Hub
-        if: matrix.artifact.type == 'frontend'
+        if: matrix.artifact.type == 'frontend' || matrix.artifact.type == 'docker'
         uses: docker/login-action@v2
         with:
           username: ${{ env.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build and push Frontend Docker image
-      - name: Build and Push Frontend Docker Image
-        if: matrix.artifact.type == 'frontend'
+      # Build and push Frontend or Docker type images
+      - name: Build and Push Docker Image
+        if: matrix.artifact.type == 'frontend' || matrix.artifact.type == 'docker'
         run: |
-          echo "Building frontend Docker image..."
+          echo "Building Docker image: ${{ matrix.artifact.name }}..."
           
           # Build Docker image with both latest and timestamped tags
           docker build -t "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:latest" \
@@ -327,8 +331,7 @@ jobs:
           
           echo "WAR artifact published successfully"
 
-      # Send build metadata to RabbitMQ
-# Step 1: Create RabbitMQ Infrastructure
+      # Step 1: Create RabbitMQ Infrastructure
       - name: Setup RabbitMQ Exchange and Queue
         if: success()
         env:
@@ -392,7 +395,7 @@ jobs:
           # Common GitHub metadata for all artifact types
           JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           
-          if [ "${{ matrix.artifact.type }}" = "frontend" ]; then
+          if [ "${{ matrix.artifact.type }}" = "frontend" ] || [ "${{ matrix.artifact.type }}" = "docker" ]; then
             # For Docker images
             IMAGE_NAME="${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}"
             MESSAGE=$(jq -n \

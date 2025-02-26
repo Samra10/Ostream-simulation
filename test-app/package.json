@@ -1,0 +1,16 @@
+{
+      "name": "test-app",
+      "version": "1.0.0",
+      "description": "Simple test application for Docker build",
+      "main": "app.js",
+      "scripts": {
+        "start": "node app.js"
+      },
+      "keywords": [
+        "docker",
+        "test",
+        "nodejs"
+      ],
+      "author": "",
+      "license": "MIT"
+    }
