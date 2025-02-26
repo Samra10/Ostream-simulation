@@ -40,127 +40,40 @@ jobs:
         run: |
           echo "Simulating template validation..."
           echo "All good!"
-
-  # --- Build and Push Artifacts ---
-  build-and-push:
-    name: Build and Push Artifacts
+          
+  # --- Docker Image Builds ---
+  build-docker:
+    name: Build Docker Images
     needs: [codeowners_validator, version_mods_validator, template_validator]
     runs-on: ubuntu-latest
-    
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Docker images
-          - type: docker
-            name: frontend-app
+          - name: frontend-app
             dockerfile: './frontend/Dockerfile'
             context: './frontend'
-          - type: docker
-            name: test-app
+          - name: test-app
             dockerfile: './test-app/Dockerfile'
             context: './test-app'
-          # Java artifacts
-          - type: jar
-            name: service1
-            module: 'service1'
-          - type: war
-            name: war-service1
-            module: 'war-service1'
     
     env:
       TIMESTAMP: ${{ github.run_id }}
       DOCKER_USERNAME: ahmad1194
-
+      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      # --- Setup For Java Builds ---
-      - name: Set up JDK 11
-        if: matrix.type == 'jar' || matrix.type == 'war'
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-
-      # --- Create Test Modules For Java ---
-      - name: Create Test Java Module
-        if: matrix.type == 'jar' || matrix.type == 'war'
-        run: |
-          MODULE="${{ matrix.module }}"
-          
-          # Create module if it doesn't exist
-          if [ ! -d "$MODULE" ]; then
-            echo "Creating test module: $MODULE"
-            mkdir -p $MODULE/src/main/java/com/example
-            mkdir -p $MODULE/target
-            
-            # Create a basic Java file
-            cat > $MODULE/src/main/java/com/example/HelloWorld.java << 'EOT'
-            package com.example;
-            
-            public class HelloWorld {
-                public static void main(String[] args) {
-                    System.out.println("Hello, World!");
-                }
-            }
-            EOT
-            
-            # Create pom.xml with appropriate packaging
-            if [ "${{ matrix.type }}" = "jar" ]; then
-              echo "Creating JAR pom.xml"
-              cat > $MODULE/pom.xml << 'EOT'
-              <project>
-                <modelVersion>4.0.0</modelVersion>
-                <groupId>com.example</groupId>
-                <artifactId>MODULE_NAME</artifactId>
-                <version>1.0.0</version>
-              </project>
-              EOT
-              sed -i "s/MODULE_NAME/$MODULE/g" $MODULE/pom.xml
-              
-              # Create placeholder JAR file
-              echo "Creating placeholder JAR"
-              touch $MODULE/target/$MODULE-1.0.0.jar
-              
-            else
-              echo "Creating WAR pom.xml"
-              cat > $MODULE/pom.xml << 'EOT'
-              <project>
-                <modelVersion>4.0.0</modelVersion>
-                <groupId>com.example</groupId>
-                <artifactId>MODULE_NAME</artifactId>
-                <version>1.0.0</version>
-                <packaging>war</packaging>
-              </project>
-              EOT
-              sed -i "s/MODULE_NAME/$MODULE/g" $MODULE/pom.xml
-              
-              # Create simple WAR content
-              mkdir -p $MODULE/src/main/webapp/WEB-INF
-              echo "<web-app/>" > $MODULE/src/main/webapp/WEB-INF/web.xml
-              echo "<html><body>Hello World</body></html>" > $MODULE/src/main/webapp/index.html
-              
-              # Create placeholder WAR file
-              echo "Creating placeholder WAR"
-              mkdir -p $MODULE/target
-              touch $MODULE/target/$MODULE-1.0.0.war
-            fi
-          fi
-
-      # --- Docker Builds ---
+        
       - name: Login to Docker Hub
-        if: matrix.type == 'docker'
         uses: docker/login-action@v2
         with:
           username: ${{ env.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
+          
       - name: Build and Push Docker Image
-        if: matrix.type == 'docker'
         run: |
-          echo "Building and pushing Docker image: ${{ matrix.name }}"
+          echo "Building Docker image: ${{ matrix.name }}"
           
           # Build with both latest and timestamped tags
           docker build -t "${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:latest" \
@@ -171,149 +84,14 @@ jobs:
           docker push "${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:latest"
           docker push "${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:${TIMESTAMP}"
           
-          # Get image digest for RabbitMQ notification
-          echo "IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-            ${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:latest | cut -d':' -f2)" >> $GITHUB_ENV
+          # Get image digest for notification
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:latest | cut -d':' -f2)
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
           
           echo "Successfully pushed Docker image: ${{ env.DOCKER_USERNAME }}/${{ matrix.name }}"
-
-      # --- Java Builds ---
-      - name: Build and Push JAR
-        if: matrix.type == 'jar'
-        run: |
-          MODULE="${{ matrix.module }}"
-          echo "Processing JAR artifact: $MODULE"
-          
-          # Try to build with Maven if the structure looks right
-          if [ -f "$MODULE/pom.xml" ]; then
-            cd $MODULE
-            
-            # Check if we can run maven
-            if grep -q "<artifactId>" pom.xml; then
-              echo "Building with Maven..."
-              mvn package -DskipTests || echo "Maven build failed, using placeholder"
-            fi
-            
-            cd ..
-          fi
-          
-          # Find JAR file
-          JAR_FILE=$(find $MODULE/target -name "*.jar" | head -n 1)
-          if [ -z "$JAR_FILE" ]; then
-            echo "No JAR file found, creating placeholder"
-            echo "This is a placeholder JAR" > $MODULE/target/$MODULE-1.0.0.jar
-            JAR_FILE="$MODULE/target/$MODULE-1.0.0.jar"
-          fi
-          
-          echo "JAR file to push: $JAR_FILE"
-          
-          # Push to JFrog if credentials exist
-          if [ -n "${{ secrets.JFROG_USERNAME }}" ] && [ -n "${{ secrets.JFROG_PASSWORD }}" ]; then
-            JFROG_URL="${{ secrets.JFROG_URL }}"
-            # Add https if missing
-            [[ "$JFROG_URL" != http* ]] && JFROG_URL="https://$JFROG_URL"
-            
-            echo "Pushing JAR to JFrog Artifactory"
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
-              -T "$JAR_FILE" \
-              "$JFROG_URL/artifactory/my-jar-repo/$MODULE/$(basename $JAR_FILE)"
-              
-            if [ $? -eq 0 ]; then
-              echo "Successfully pushed JAR to JFrog Artifactory"
-            else
-              echo "Failed to push JAR to JFrog Artifactory, but continuing"
-            fi
-          else
-            echo "JFrog credentials not provided, skipping push"
-          fi
-
-      - name: Build and Push WAR
-        if: matrix.type == 'war'
-        run: |
-          MODULE="${{ matrix.module }}"
-          echo "Processing WAR artifact: $MODULE"
-          
-          # Try to build with Maven if the structure looks right
-          if [ -f "$MODULE/pom.xml" ]; then
-            cd $MODULE
-            
-            # Check if we can run maven
-            if grep -q "<artifactId>" pom.xml; then
-              echo "Building with Maven..."
-              mvn package -DskipTests || echo "Maven build failed, using placeholder"
-            fi
-            
-            cd ..
-          fi
-          
-          # Find WAR file
-          WAR_FILE=$(find $MODULE/target -name "*.war" | head -n 1)
-          if [ -z "$WAR_FILE" ]; then
-            echo "No WAR file found, creating placeholder"
-            echo "This is a placeholder WAR" > $MODULE/target/$MODULE-1.0.0.war
-            WAR_FILE="$MODULE/target/$MODULE-1.0.0.war"
-          fi
-          
-          echo "WAR file to push: $WAR_FILE"
-          
-          # Push to JFrog if credentials exist
-          if [ -n "${{ secrets.JFROG_USERNAME }}" ] && [ -n "${{ secrets.JFROG_PASSWORD }}" ]; then
-            JFROG_URL="${{ secrets.JFROG_URL }}"
-            # Add https if missing
-            [[ "$JFROG_URL" != http* ]] && JFROG_URL="https://$JFROG_URL"
-            
-            echo "Pushing WAR to JFrog Artifactory"
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
-              -T "$WAR_FILE" \
-              "$JFROG_URL/artifactory/my-war-repo/$MODULE/$(basename $WAR_FILE)"
-              
-            if [ $? -eq 0 ]; then
-              echo "Successfully pushed WAR to JFrog Artifactory"
-            else
-              echo "Failed to push WAR to JFrog Artifactory, but continuing"
-            fi
-          else
-            echo "JFrog credentials not provided, skipping push"
-          fi
-
-      # --- RabbitMQ Notification ---
-      - name: Setup RabbitMQ Exchange and Queue
-        if: success()
-        env:
-          RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
-          RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
-          RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
-          RABBITMQ_QUEUE: "githubactions-ssd"
-          RABBITMQ_EXCHANGE: "githubactions.events"
-          RABBITMQ_ROUTING_KEY: "githubactions-ssd"
-        run: |
-          # Skip if credentials are missing
-          if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
-            echo "RabbitMQ credentials not configured, skipping"
-            exit 0
-          fi
-          
-          echo "Setting up RabbitMQ infrastructure"
-          
-          # Create exchange
-          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
-               -H "Content-Type: application/json" \
-               -X PUT "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE" \
-               -d '{"type":"direct","durable":true}'
-          
-          # Create queue
-          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
-               -H "Content-Type: application/json" \
-               -X PUT "$RABBITMQ_URL/api/queues/%2F/$RABBITMQ_QUEUE" \
-               -d '{"durable":true}'
-          
-          # Bind queue to exchange
-          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
-               -H "Content-Type: application/json" \
-               -X POST "$RABBITMQ_URL/api/bindings/%2F/e/$RABBITMQ_EXCHANGE/q/$RABBITMQ_QUEUE" \
-               -d '{"routing_key":"'$RABBITMQ_ROUTING_KEY'"}'
-
-      - name: Send Build Notification to RabbitMQ
+      
+      - name: Setup RabbitMQ and Send Notification
         if: success()
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
@@ -324,115 +102,347 @@ jobs:
           RABBITMQ_ROUTING_KEY: "githubactions-ssd"
           ORG_NAME: "opsmx"
         run: |
-          # Skip if credentials are missing
+          # Skip if credentials missing
           if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
-            echo "RabbitMQ credentials not configured, skipping notification"
+            echo "RabbitMQ credentials not provided, skipping notification"
             exit 0
           fi
           
-          echo "Preparing RabbitMQ notification for ${{ matrix.type }}: ${{ matrix.name }}"
+          # Setup RabbitMQ
+          echo "Setting up RabbitMQ infrastructure"
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE" \
+               -d '{"type":"direct","durable":true}'
           
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/queues/%2F/$RABBITMQ_QUEUE" \
+               -d '{"durable":true}'
+          
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X POST "$RABBITMQ_URL/api/bindings/%2F/e/$RABBITMQ_EXCHANGE/q/$RABBITMQ_QUEUE" \
+               -d '{"routing_key":"'$RABBITMQ_ROUTING_KEY'"}'
+          
+          # Send notification
           JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           
-          # Create message based on artifact type
-          if [ "${{ matrix.type }}" = "docker" ]; then
-            # Docker image message
-            MESSAGE=$(jq -n \
-              --arg image "${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:${TIMESTAMP}" \
-              --arg imageTag "${TIMESTAMP}" \
-              --arg imgsha "sha256:${{ env.IMAGE_DIGEST }}" \
-              --arg jobId "${{ github.job }}" \
-              --arg buildNumber "${{ github.run_number }}" \
-              --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
-              --arg gitCommit "${{ github.sha }}" \
-              --arg gitBranch "${{ github.ref_name }}" \
-              --arg jobUrl "$JOB_URL" \
-              --arg buildTime "$BUILD_TIME" \
-              --arg buildUser "${{ github.actor }}" \
-              --arg visibility "public" \
-              --arg organization "$ORG_NAME" \
-              --arg workflowName "Simulated Customer Build Pipeline" \
-              '{
-                image: $image,
-                imageTag: $imageTag,
-                imgsha: $imgsha,
-                jobId: $jobId,
-                buildNumber: $buildNumber,
-                gitUrl: $gitUrl,
-                gitCommit: $gitCommit,
-                gitBranch: $gitBranch,
-                jobUrl: $jobUrl,
-                buildTime: $buildTime,
-                buildUser: $buildUser,
-                diffCommits: "",
-                visibility: $visibility,
-                parentRepo: "",
-                licenseName: "",
-                organization: $organization,
-                workflowName: $workflowName,
-                applicationTags: "docker,container"
-              }')
-          elif [ "${{ matrix.type }}" = "jar" ] || [ "${{ matrix.type }}" = "war" ]; then
-            # JAR/WAR message
-            MESSAGE=$(jq -n \
-              --arg artifact "${{ matrix.module }}" \
-              --arg type "${{ matrix.type }}" \
-              --arg version "1.0.0" \
-              --arg jobId "${{ github.job }}" \
-              --arg buildNumber "${{ github.run_number }}" \
-              --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
-              --arg gitCommit "${{ github.sha }}" \
-              --arg gitBranch "${{ github.ref_name }}" \
-              --arg jobUrl "$JOB_URL" \
-              --arg buildTime "$BUILD_TIME" \
-              --arg buildUser "${{ github.actor }}" \
-              --arg organization "$ORG_NAME" \
-              --arg workflowName "Simulated Customer Build Pipeline" \
-              '{
-                artifact: $artifact,
-                type: $type,
-                version: $version,
-                jobId: $jobId,
-                buildNumber: $buildNumber,
-                gitUrl: $gitUrl,
-                gitCommit: $gitCommit,
-                gitBranch: $gitBranch,
-                jobUrl: $jobUrl,
-                buildTime: $buildTime,
-                buildUser: $buildUser,
-                diffCommits: "",
-                visibility: "public",
-                organization: $organization,
-                workflowName: $workflowName,
-                applicationTags: "java," + $type
-              }')
-          fi
+          # Create message
+          MESSAGE=$(jq -n \
+            --arg image "${{ env.DOCKER_USERNAME }}/${{ matrix.name }}:${TIMESTAMP}" \
+            --arg imageTag "${TIMESTAMP}" \
+            --arg imgsha "sha256:${{ env.IMAGE_DIGEST }}" \
+            --arg jobId "${{ github.job }}" \
+            --arg buildNumber "${{ github.run_number }}" \
+            --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
+            --arg gitCommit "${{ github.sha }}" \
+            --arg gitBranch "${{ github.ref_name }}" \
+            --arg jobUrl "$JOB_URL" \
+            --arg buildTime "$BUILD_TIME" \
+            --arg buildUser "${{ github.actor }}" \
+            --arg visibility "public" \
+            --arg organization "$ORG_NAME" \
+            --arg workflowName "Simulated Customer Build Pipeline" \
+            '{
+              image: $image,
+              imageTag: $imageTag,
+              imgsha: $imgsha,
+              jobId: $jobId,
+              buildNumber: $buildNumber,
+              gitUrl: $gitUrl,
+              gitCommit: $gitCommit,
+              gitBranch: $gitBranch,
+              jobUrl: $jobUrl,
+              buildTime: $buildTime,
+              buildUser: $buildUser,
+              diffCommits: "",
+              visibility: $visibility,
+              parentRepo: "",
+              licenseName: "",
+              organization: $organization,
+              workflowName: $workflowName,
+              applicationTags: "docker,container"
+            }')
           
-          # Construct RabbitMQ API payload
+          # Send to RabbitMQ
           PAYLOAD=$(jq -n \
-              --arg vhost "/" \
-              --arg name "$RABBITMQ_EXCHANGE" \
-              --argjson properties '{}' \
-              --arg routing_key "$RABBITMQ_ROUTING_KEY" \
-              --arg delivery_mode "2" \
-              --arg payload "$MESSAGE" \
-              --arg payload_encoding "string" \
-              '{
-                vhost: $vhost,
-                name: $name,
-                properties: $properties,
-                routing_key: $routing_key,
-                delivery_mode: $delivery_mode,
-                payload: $payload,
-                payload_encoding: $payload_encoding
-              }')
+            --arg vhost "/" \
+            --arg name "$RABBITMQ_EXCHANGE" \
+            --argjson properties '{}' \
+            --arg routing_key "$RABBITMQ_ROUTING_KEY" \
+            --arg delivery_mode "2" \
+            --arg payload "$MESSAGE" \
+            --arg payload_encoding "string" \
+            '{
+              vhost: $vhost,
+              name: $name,
+              properties: $properties,
+              routing_key: $routing_key,
+              delivery_mode: $delivery_mode,
+              payload: $payload,
+              payload_encoding: $payload_encoding
+            }')
           
-          # Send notification
-          echo "Sending notification to RabbitMQ"
           curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
               -X POST "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE/publish" \
               --data-binary "$PAYLOAD"
           
-          echo "Notification sent for ${{ matrix.type }}: ${{ matrix.name }}"
+          echo "Notification sent for Docker image: ${{ matrix.name }}"
+
+  # --- Java Artifact Builds ---
+  build-java:
+    name: Build Java Artifacts
+    needs: [codeowners_validator, version_mods_validator, template_validator]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - type: jar
+            name: service1
+            module: 'service1'
+          - type: war
+            name: war-service1
+            module: 'war-service1'
+    
+    env:
+      TIMESTAMP: ${{ github.run_id }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 11
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      
+      - name: Create Test Java Module
+        run: |
+          MODULE="${{ matrix.module }}"
+          TYPE="${{ matrix.type }}"
+          
+          # Create module directory if it doesn't exist
+          if [ ! -d "$MODULE" ]; then
+            echo "Creating test module: $MODULE"
+            mkdir -p $MODULE/src/main/java/com/example
+            mkdir -p $MODULE/target
+          fi
+          
+          # Create a simple Java file
+          echo "package com.example;" > $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "public class HelloWorld {" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "    public static void main(String[] args) {" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "        System.out.println(\"Hello, World!\");" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "    }" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          echo "}" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          
+          # Create appropriate POM file
+          echo "<project>" > $MODULE/pom.xml
+          echo "  <modelVersion>4.0.0</modelVersion>" >> $MODULE/pom.xml
+          echo "  <groupId>com.example</groupId>" >> $MODULE/pom.xml
+          echo "  <artifactId>$MODULE</artifactId>" >> $MODULE/pom.xml
+          echo "  <version>1.0.0</version>" >> $MODULE/pom.xml
+          
+          if [ "$TYPE" = "war" ]; then
+            echo "  <packaging>war</packaging>" >> $MODULE/pom.xml
+            
+            # Create web app structure for WAR
+            mkdir -p $MODULE/src/main/webapp/WEB-INF
+            echo "<web-app/>" > $MODULE/src/main/webapp/WEB-INF/web.xml
+            echo "<html><body>Hello World</body></html>" > $MODULE/src/main/webapp/index.html
+          fi
+          
+          echo "</project>" >> $MODULE/pom.xml
+          
+          # Create placeholder files
+          if [ "$TYPE" = "jar" ]; then
+            echo "Creating placeholder JAR file"
+            echo "Placeholder JAR content" > $MODULE/target/$MODULE-1.0.0.jar
+          else
+            echo "Creating placeholder WAR file"
+            echo "Placeholder WAR content" > $MODULE/target/$MODULE-1.0.0.war
+          fi
+      
+      - name: Build Java Artifact
+        run: |
+          MODULE="${{ matrix.module }}"
+          TYPE="${{ matrix.type }}"
+          
+          echo "Building $TYPE artifact: $MODULE"
+          
+          # Try to build with Maven
+          if [ -f "$MODULE/pom.xml" ]; then
+            cd $MODULE
+            mvn package -DskipTests || echo "Maven build failed, using placeholder"
+            cd ..
+          fi
+          
+          # Locate the built artifact
+          if [ "$TYPE" = "jar" ]; then
+            ARTIFACT=$(find $MODULE/target -name "*.jar" | head -n 1)
+            if [ -z "$ARTIFACT" ]; then
+              echo "Creating placeholder JAR file"
+              echo "Placeholder JAR content" > $MODULE/target/$MODULE-1.0.0.jar
+              ARTIFACT="$MODULE/target/$MODULE-1.0.0.jar"
+            fi
+          else
+            ARTIFACT=$(find $MODULE/target -name "*.war" | head -n 1)
+            if [ -z "$ARTIFACT" ]; then
+              echo "Creating placeholder WAR file"
+              echo "Placeholder WAR content" > $MODULE/target/$MODULE-1.0.0.war
+              ARTIFACT="$MODULE/target/$MODULE-1.0.0.war"
+            fi
+          fi
+          
+          echo "Built artifact: $ARTIFACT"
+          echo "ARTIFACT_PATH=$ARTIFACT" >> $GITHUB_ENV
+      
+      - name: Push to JFrog Artifactory
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+        run: |
+          MODULE="${{ matrix.module }}"
+          TYPE="${{ matrix.type }}"
+          ARTIFACT="${{ env.ARTIFACT_PATH }}"
+          
+          # Skip if no credentials
+          if [ -z "$JFROG_USERNAME" ] || [ -z "$JFROG_PASSWORD" ] || [ -z "$JFROG_URL" ]; then
+            echo "JFrog credentials not provided, skipping push"
+            exit 0
+          fi
+          
+          # Ensure URL has protocol
+          if [[ "$JFROG_URL" != http* ]]; then
+            JFROG_URL="https://$JFROG_URL"
+          fi
+          
+          # Add /artifactory if needed
+          if [[ "$JFROG_URL" != */artifactory ]]; then
+            JFROG_URL="$JFROG_URL/artifactory"
+          fi
+          
+          # Use appropriate repository based on type
+          if [ "$TYPE" = "jar" ]; then
+            REPO="my-jar-repo"
+          else
+            REPO="my-war-repo"
+          fi
+          
+          echo "Pushing $TYPE to JFrog Artifactory: $ARTIFACT"
+          curl -u "$JFROG_USERNAME:$JFROG_PASSWORD" \
+               -T "$ARTIFACT" \
+               "$JFROG_URL/$REPO/$MODULE/$(basename $ARTIFACT)"
+          
+          if [ $? -eq 0 ]; then
+            echo "Successfully pushed $TYPE to JFrog Artifactory"
+          else
+            echo "Failed to push $TYPE to JFrog Artifactory"
+          fi
+      
+      - name: Setup RabbitMQ and Send Notification
+        if: success()
+        env:
+          RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
+          RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+          RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
+          RABBITMQ_QUEUE: "githubactions-ssd"
+          RABBITMQ_EXCHANGE: "githubactions.events"
+          RABBITMQ_ROUTING_KEY: "githubactions-ssd"
+          ORG_NAME: "opsmx"
+        run: |
+          # Skip if credentials missing
+          if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
+            echo "RabbitMQ credentials not provided, skipping notification"
+            exit 0
+          fi
+          
+          # Setup RabbitMQ
+          echo "Setting up RabbitMQ infrastructure"
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE" \
+               -d '{"type":"direct","durable":true}'
+          
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/queues/%2F/$RABBITMQ_QUEUE" \
+               -d '{"durable":true}'
+          
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X POST "$RABBITMQ_URL/api/bindings/%2F/e/$RABBITMQ_EXCHANGE/q/$RABBITMQ_QUEUE" \
+               -d '{"routing_key":"'$RABBITMQ_ROUTING_KEY'"}'
+          
+          # Send notification
+          MODULE="${{ matrix.module }}"
+          TYPE="${{ matrix.type }}"
+          JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          
+          # Create message
+          MESSAGE=$(jq -n \
+            --arg artifact "$MODULE" \
+            --arg type "$TYPE" \
+            --arg version "1.0.0" \
+            --arg jobId "${{ github.job }}" \
+            --arg buildNumber "${{ github.run_number }}" \
+            --arg gitUrl "${{ github.server_url }}/${{ github.repository }}" \
+            --arg gitCommit "${{ github.sha }}" \
+            --arg gitBranch "${{ github.ref_name }}" \
+            --arg jobUrl "$JOB_URL" \
+            --arg buildTime "$BUILD_TIME" \
+            --arg buildUser "${{ github.actor }}" \
+            --arg organization "$ORG_NAME" \
+            --arg workflowName "Simulated Customer Build Pipeline" \
+            '{
+              artifact: $artifact,
+              type: $type,
+              version: $version,
+              jobId: $jobId,
+              buildNumber: $buildNumber,
+              gitUrl: $gitUrl,
+              gitCommit: $gitCommit,
+              gitBranch: $gitBranch,
+              jobUrl: $jobUrl,
+              buildTime: $buildTime,
+              buildUser: $buildUser,
+              diffCommits: "",
+              visibility: "public",
+              organization: $organization,
+              workflowName: $workflowName,
+              applicationTags: "java," + $type
+            }')
+          
+          # Send to RabbitMQ
+          PAYLOAD=$(jq -n \
+            --arg vhost "/" \
+            --arg name "$RABBITMQ_EXCHANGE" \
+            --argjson properties '{}' \
+            --arg routing_key "$RABBITMQ_ROUTING_KEY" \
+            --arg delivery_mode "2" \
+            --arg payload "$MESSAGE" \
+            --arg payload_encoding "string" \
+            '{
+              vhost: $vhost,
+              name: $name,
+              properties: $properties,
+              routing_key: $routing_key,
+              delivery_mode: $delivery_mode,
+              payload: $payload,
+              payload_encoding: $payload_encoding
+            }')
+          
+          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+              -H "Content-Type: application/json" \
+              -X POST "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE/publish" \
+              --data-binary "$PAYLOAD"
+          
+          echo "Notification sent for $TYPE: $MODULE"
