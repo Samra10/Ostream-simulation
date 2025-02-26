@@ -8,14 +8,12 @@ on:
 
 jobs:
   # --- Validator Jobs ---
-
   codeowners_validator:
     name: CodeOwners Validator
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: CodeOwners Validation
         run: |
           echo "Simulating CodeOwners check..."
@@ -27,19 +25,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Version & Mods Validation
         run: |
           echo "Simulating version & mods checks..."
           echo "Looks fine!"
-  
+
   template_validator:
     name: Template Validator
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Template Validator Step
         run: |
           echo "Simulating template validation..."
@@ -48,7 +44,6 @@ jobs:
   # --- Final Build Job ---
   build:
     name: Build Artifacts
-    # This job depends on all validator jobs
     needs: [codeowners_validator, version_mods_validator, template_validator]
     runs-on: ubuntu-latest
     strategy:
@@ -116,7 +111,6 @@ jobs:
             IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
               "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
             echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
-
           fi
 
       - name: Send Build Metadata to RabbitMQ
@@ -136,7 +130,6 @@ jobs:
           elif [ "${{ matrix.artifact.type }}" = "war" ]; then
             PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "war"}')
           fi
-
           echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
           curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
