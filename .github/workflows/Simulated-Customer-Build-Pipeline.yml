@@ -349,49 +349,6 @@ jobs:
           else
             echo "Failed to push $TYPE to JFrog Artifactory"
           fi
-      - name: Push to JFrog Artifactory
-        env:
-          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
-          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
-          JFROG_URL: ${{ secrets.JFROG_URL }}
-        run: |
-          MODULE="${{ matrix.module }}"
-          TYPE="${{ matrix.type }}"
-          ARTIFACT="${{ env.ARTIFACT_PATH }}"
-          
-          # Skip if no credentials
-          if [ -z "$JFROG_USERNAME" ] || [ -z "$JFROG_PASSWORD" ] || [ -z "$JFROG_URL" ]; then
-            echo "JFrog credentials not provided, skipping push"
-            exit 0
-          fi
-          
-          # Ensure URL has protocol
-          if [[ "$JFROG_URL" != http* ]]; then
-            JFROG_URL="https://$JFROG_URL"
-          fi
-          
-          # Add /artifactory if needed
-          if [[ "$JFROG_URL" != */artifactory ]]; then
-            JFROG_URL="$JFROG_URL/artifactory"
-          fi
-          
-          # Use appropriate repository based on type
-          if [ "$TYPE" = "jar" ]; then
-            REPO="my-jar-repo"
-          else
-            REPO="my-war-repo"
-          fi
-          
-          echo "Pushing $TYPE to JFrog Artifactory: $ARTIFACT"
-          curl -u "$JFROG_USERNAME:$JFROG_PASSWORD" \
-               -T "$ARTIFACT" \
-               "$JFROG_URL/$REPO/$MODULE/$(basename $ARTIFACT)"
-          
-          if [ $? -eq 0 ]; then
-            echo "Successfully pushed $TYPE to JFrog Artifactory"
-          else
-            echo "Failed to push $TYPE to JFrog Artifactory"
-          fi
       
       - name: Setup RabbitMQ and Send Notification
         if: success()
@@ -433,7 +390,10 @@ jobs:
           JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           
-          # Create message
+          # Create a proper tag string outside of jq
+          TAGS="java,${TYPE}"
+          
+          # Create message without concatenation in jq
           MESSAGE=$(jq -n \
             --arg artifact "$MODULE" \
             --arg type "$TYPE" \
@@ -448,6 +408,7 @@ jobs:
             --arg buildUser "${{ github.actor }}" \
             --arg organization "$ORG_NAME" \
             --arg workflowName "Simulated Customer Build Pipeline" \
+            --arg tags "$TAGS" \
             '{
               artifact: $artifact,
               type: $type,
@@ -464,8 +425,12 @@ jobs:
               visibility: "public",
               organization: $organization,
               workflowName: $workflowName,
-              applicationTags: "java," + $type
+              applicationTags: $tags
             }')
+          
+          # For debugging
+          echo "MESSAGE JSON:"
+          echo "$MESSAGE" | jq .
           
           # Send to RabbitMQ
           PAYLOAD=$(jq -n \
@@ -486,7 +451,7 @@ jobs:
               payload_encoding: $payload_encoding
             }')
           
-          curl -s -u $RABBITMQ_USER:$RABBITMQ_PASS \
+          curl -v -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
               -X POST "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE/publish" \
               --data-binary "$PAYLOAD"
