@@ -54,12 +54,6 @@ jobs:
             name: docker-image
             dockerfile: './Dockerfile'
             context: '.'
-          - type: jar
-            name: service1
-            module: 'service1'
-          - type: war
-            name: war-service1
-            module: 'war-service1'
           - type: frontend
             name: frontend-app
             dockerfile: './frontend/Dockerfile'
@@ -71,85 +65,125 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
+      # Process JFrog URL to make it Docker-compatible
+      - name: Process Docker Registry URL
+        if: matrix.artifact.type == 'docker' || matrix.artifact.type == 'frontend'
+        run: |
+          # Get JFrog URL from secrets
+          JFROG_URL="${{ secrets.JFROG_URL }}"
+          
+          # Remove protocol prefix if present (http:// or https://)
+          DOCKER_REPO=$(echo "$JFROG_URL" | sed -E 's#^https?://##')
+          
+          # Remove trailing slashes if present
+          DOCKER_REPO=$(echo "$DOCKER_REPO" | sed 's#/$##')
+          
+          # Export for use in subsequent steps
+          echo "DOCKER_REPO=$DOCKER_REPO" >> $GITHUB_ENV
+          echo "Using Docker registry: $DOCKER_REPO"
+
+      # Check if folders for other modules exist before including them in the build
+      - name: Verify Module Structure
+        id: check_modules
+        run: |
+          if [ -d "./service1" ] && [ -f "./service1/pom.xml" ]; then
+            echo "service1_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "service1_exists=false" >> $GITHUB_OUTPUT
+            echo "Note: service1 module not found or missing pom.xml"
+          fi
+          
+          if [ -d "./war-service1" ] && [ -f "./war-service1/pom.xml" ]; then
+            echo "war_service1_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "war_service1_exists=false" >> $GITHUB_OUTPUT
+            echo "Note: war-service1 module not found or missing pom.xml"
+          fi
+
       # Add Docker login step before building/pushing
       - name: Login to JFrog Docker Registry
         if: matrix.artifact.type == 'docker' || matrix.artifact.type == 'frontend'
         uses: docker/login-action@v2
         with:
-          registry: ${{ secrets.JFROG_URL }}
+          registry: ${{ env.DOCKER_REPO }}
           username: ${{ secrets.JFROG_USERNAME }}
           password: ${{ secrets.JFROG_PASSWORD }}
 
-      # Validate the Docker registry URL
-      - name: Validate Docker Registry URL
+      - name: Build Docker/Frontend Artifact
         if: matrix.artifact.type == 'docker' || matrix.artifact.type == 'frontend'
         run: |
-          # Extract the registry domain for validation
-          REGISTRY_DOMAIN=$(echo "${{ secrets.JFROG_URL }}" | cut -d'/' -f1)
-          echo "Validating registry domain: $REGISTRY_DOMAIN"
+          echo "Building ${{ matrix.artifact.type }} image: ${{ matrix.artifact.name }}..."
           
-          # Check if the domain is valid
-          if [[ ! $REGISTRY_DOMAIN =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
-            echo "ERROR: Invalid Docker registry domain format"
-            exit 1
-          fi
+          # Use docker build command with properly formatted registry URL
+          docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+            -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
           
-          # Create proper Docker repository reference
-          DOCKER_REPO="${{ secrets.JFROG_URL }}"
+          echo "Pushing to registry..."
+          docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
           
-          # Ensure it's properly formatted for Docker (remove trailing slashes)
-          DOCKER_REPO=$(echo "$DOCKER_REPO" | sed 's/\/$//')
-          
-          echo "DOCKER_REPO=$DOCKER_REPO" >> $GITHUB_ENV
+          # Get image digest for later use
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
 
-      - name: Build Artifact
+      - name: Build and Push JAR Artifact
+        if: matrix.artifact.type == 'jar' && steps.check_modules.outputs.service1_exists == 'true'
         run: |
-          if [ "${{ matrix.artifact.type }}" = "docker" ]; then
-            echo "Building Docker image..."
-            # Use the validated repository URL
-            docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
-              -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
-            docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+          echo "Building JAR for service1 module..."
+          cd service1
+          mvn clean package -DskipTests
+          cd ..
+          
+          # Check if any JAR files were generated
+          if ls service1/target/*.jar 1> /dev/null 2>&1; then
+            JAR_FILE=$(ls service1/target/*.jar | head -n 1)
+            echo "Pushing JAR to JFROG Artifactory: $JAR_FILE"
             
-            IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-              "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
-            echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
-
-          elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
-            echo "Building JAR for module: ${{ matrix.artifact.module }}"
-            cd ${{ matrix.artifact.module }}
-            mvn clean package -DskipTests
-            cd ..
-            JAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.jar | head -n 1)
-            echo "Pushing JAR to JFROG Artifactory..."
+            # Construct JFrog URL with protocol for curl
+            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
+            # Ensure it has a protocol prefix
+            if [[ "$JFROG_FULL_URL" != http* ]]; then
+              JFROG_FULL_URL="https://$JFROG_FULL_URL"
+            fi
+            
             curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
               -T "$JAR_FILE" \
-              "${{ secrets.JFROG_URL }}/my-jar-repo/${{ matrix.artifact.module }}/$(basename $JAR_FILE)"
+              "$JFROG_FULL_URL/my-jar-repo/service1/$(basename $JAR_FILE)"
+          else
+            echo "No JAR files found in service1/target directory"
+            exit 1
+          fi
 
-          elif [ "${{ matrix.artifact.type }}" = "war" ]; then
-            echo "Building WAR for module: ${{ matrix.artifact.module }}"
-            cd ${{ matrix.artifact.module }}
-            mvn clean package -DskipTests
-            cd ..
-            WAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.war | head -n 1)
-            echo "Pushing WAR to JFROG Artifactory..."
+      - name: Build and Push WAR Artifact
+        if: matrix.artifact.type == 'war' && steps.check_modules.outputs.war_service1_exists == 'true'
+        run: |
+          echo "Building WAR for war-service1 module..."
+          cd war-service1
+          mvn clean package -DskipTests
+          cd ..
+          
+          # Check if any WAR files were generated
+          if ls war-service1/target/*.war 1> /dev/null 2>&1; then
+            WAR_FILE=$(ls war-service1/target/*.war | head -n 1)
+            echo "Pushing WAR to JFROG Artifactory: $WAR_FILE"
+            
+            # Construct JFrog URL with protocol for curl
+            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
+            # Ensure it has a protocol prefix
+            if [[ "$JFROG_FULL_URL" != http* ]]; then
+              JFROG_FULL_URL="https://$JFROG_FULL_URL"
+            fi
+            
             curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
               -T "$WAR_FILE" \
-              "${{ secrets.JFROG_URL }}/my-war-repo/${{ matrix.artifact.module }}/$(basename $WAR_FILE)"
-
-          elif [ "${{ matrix.artifact.type }}" = "frontend" ]; then
-            echo "Building Frontend Docker image..."
-            # Use the validated repository URL
-            docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
-              -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
-            docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
-            
-            IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-              "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
-            echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+              "$JFROG_FULL_URL/my-war-repo/war-service1/$(basename $WAR_FILE)"
+          else
+            echo "No WAR files found in war-service1/target directory"
+            exit 1
           fi
 
       - name: Send Build Metadata to RabbitMQ
+        if: success()
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
