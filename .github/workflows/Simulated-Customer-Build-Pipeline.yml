@@ -221,45 +221,6 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
       
-      - name: Create Test Java Module
-        run: |
-          MODULE="${{ matrix.module }}"
-          TYPE="${{ matrix.type }}"
-          
-          echo "Current directory: $(pwd)"
-          echo "Creating test module: $MODULE"
-          
-          # Create all directories in one step and verify
-          mkdir -p "$MODULE/target"
-          if [ ! -d "$MODULE/target" ]; then
-            echo "ERROR: Failed to create directory structure"
-            exit 1
-          fi
-          
-          # Create minimal POM file
-          cat > "$MODULE/pom.xml" << EOF
-          <project>
-            <modelVersion>4.0.0</modelVersion>
-            <groupId>com.example</groupId>
-            <artifactId>$MODULE</artifactId>
-            <version>1.0.0</version>
-            $([ "$TYPE" = "war" ] && echo "  <packaging>war</packaging>")
-          </project>
-          EOF
-          
-          # Create placeholder artifact file directly
-          if [ "$TYPE" = "jar" ]; then
-            echo "Creating placeholder JAR"
-            echo "Placeholder JAR content for $MODULE" > "$MODULE/target/$MODULE-1.0.0.jar"
-          else
-            echo "Creating placeholder WAR"
-            echo "Placeholder WAR content for $MODULE" > "$MODULE/target/$MODULE-1.0.0.war"
-          fi
-          
-          echo "Successfully created test $TYPE module: $MODULE"
-          echo "Files created:"
-          find "$MODULE" -type f | sort
-      
       - name: Build Java Artifact
         run: |
           MODULE="${{ matrix.module }}"
