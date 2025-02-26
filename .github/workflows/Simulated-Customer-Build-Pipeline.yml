@@ -70,16 +70,49 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+      
+      # Add Docker login step before building/pushing
+      - name: Login to JFrog Docker Registry
+        if: matrix.artifact.type == 'docker' || matrix.artifact.type == 'frontend'
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.JFROG_URL }}
+          username: ${{ secrets.JFROG_USERNAME }}
+          password: ${{ secrets.JFROG_PASSWORD }}
+
+      # Validate the Docker registry URL
+      - name: Validate Docker Registry URL
+        if: matrix.artifact.type == 'docker' || matrix.artifact.type == 'frontend'
+        run: |
+          # Extract the registry domain for validation
+          REGISTRY_DOMAIN=$(echo "${{ secrets.JFROG_URL }}" | cut -d'/' -f1)
+          echo "Validating registry domain: $REGISTRY_DOMAIN"
+          
+          # Check if the domain is valid
+          if [[ ! $REGISTRY_DOMAIN =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
+            echo "ERROR: Invalid Docker registry domain format"
+            exit 1
+          fi
+          
+          # Create proper Docker repository reference
+          DOCKER_REPO="${{ secrets.JFROG_URL }}"
+          
+          # Ensure it's properly formatted for Docker (remove trailing slashes)
+          DOCKER_REPO=$(echo "$DOCKER_REPO" | sed 's/\/$//')
+          
+          echo "DOCKER_REPO=$DOCKER_REPO" >> $GITHUB_ENV
 
       - name: Build Artifact
         run: |
           if [ "${{ matrix.artifact.type }}" = "docker" ]; then
             echo "Building Docker image..."
-            docker build -t "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+            # Use the validated repository URL
+            docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
               -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
-            docker push "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            
             IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-              "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+              "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
             echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
 
           elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
@@ -106,11 +139,13 @@ jobs:
 
           elif [ "${{ matrix.artifact.type }}" = "frontend" ]; then
             echo "Building Frontend Docker image..."
-            docker build -t "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+            # Use the validated repository URL
+            docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
               -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
-            docker push "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+            
             IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-              "${{ secrets.JFROG_URL }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+              "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
             echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
           fi
 
