@@ -47,6 +47,7 @@ jobs:
     needs: [codeowners_validator, version_mods_validator, template_validator]
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false        # This ensures each artifact's build runs independently.
       matrix:
         artifact:
           - type: docker
@@ -130,6 +131,7 @@ jobs:
           elif [ "${{ matrix.artifact.type }}" = "war" ]; then
             PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "war"}')
           fi
+
           echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
           curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
