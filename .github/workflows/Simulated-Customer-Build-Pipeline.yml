@@ -329,12 +329,18 @@ jobs:
 
       # Send build metadata to RabbitMQ
       - name: Send Build Metadata to RabbitMQ
-        if: success() && secrets.RABBITMQ_URL != ''
+        if: success()
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
         run: |
+          # Check if RabbitMQ credentials are set
+          if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
+            echo "RabbitMQ credentials not fully configured, skipping notification"
+            exit 0
+          fi
+          
           # Create appropriate payload based on artifact type
           if [ "${{ matrix.artifact.type }}" = "frontend" ]; then
             PAYLOAD=$(jq -n \
