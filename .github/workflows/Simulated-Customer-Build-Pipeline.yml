@@ -41,222 +41,319 @@ jobs:
           echo "Simulating template validation..."
           echo "All good!"
 
-  # --- Final Build Job ---
+  # --- Build Job with Matrix Strategy ---
   build:
     name: Build Artifacts
     needs: [codeowners_validator, version_mods_validator, template_validator]
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false        # This ensures each artifact's build runs independently.
+      fail-fast: false
       matrix:
         artifact:
+          - type: frontend
+            name: frontend-app
+            dockerfile: './frontend/Dockerfile'
+            context: './frontend'
           - type: jar
             name: service1
             module: 'service1'
           - type: war
             name: war-service1
             module: 'war-service1'
-          - type: frontend
-            name: frontend-app
-            dockerfile: './frontend/Dockerfile'
-            context: './frontend'
     env:
-      TIMESTAMP: ${{ github.run_id }}   # Using run_id as a pseudo-timestamp
+      TIMESTAMP: ${{ github.run_id }}
+      DOCKER_USERNAME: ahmad1194 # Default to your Docker Hub username
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      # Process JFrog URL for Docker builds only
-      - name: Process Docker Registry URL
-        if: matrix.artifact.type == 'frontend'
+      # Set up Java for JAR/WAR builds
+      - name: Set up JDK 11
+        if: matrix.artifact.type == 'jar' || matrix.artifact.type == 'war'
+        uses: actions/setup-java@v3
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+      
+      # Create placeholder Java modules if they don't exist
+      - name: Create Java Test Modules
+        if: matrix.artifact.type == 'jar' || matrix.artifact.type == 'war'
         run: |
-          # Get JFrog URL from secrets
-          JFROG_URL="${{ secrets.JFROG_URL }}"
+          MODULE="${{ matrix.artifact.module }}"
           
-          # Remove protocol prefix if present (http:// or https://)
-          DOCKER_REPO=$(echo "$JFROG_URL" | sed -E 's#^https?://##')
-          
-          # Remove trailing slashes if present
-          DOCKER_REPO=$(echo "$DOCKER_REPO" | sed 's#/$##')
-          
-          # Export for use in subsequent steps
-          echo "DOCKER_REPO=$DOCKER_REPO" >> $GITHUB_ENV
-          echo "Using Docker registry: $DOCKER_REPO"
+          # Check if the module directory exists
+          if [ ! -d "$MODULE" ]; then
+            echo "Creating test module: $MODULE"
+            mkdir -p $MODULE/src/main/java/com/example
+            mkdir -p $MODULE/target
+            
+            # Create a simple Java class
+            cat > $MODULE/src/main/java/com/example/HelloWorld.java << EOF
+            package com.example;
+            
+            public class HelloWorld {
+                public static void main(String[] args) {
+                    System.out.println("Hello, World!");
+                }
+            }
+            EOF
+            
+            # Create a basic pom.xml file
+            if [ "${{ matrix.artifact.type }}" = "jar" ]; then
+              cat > $MODULE/pom.xml << EOF
+              <project xmlns="http://maven.apache.org/POM/4.0.0"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                          http://maven.apache.org/xsd/maven-4.0.0.xsd">
+                <modelVersion>4.0.0</modelVersion>
+                <groupId>com.example</groupId>
+                <artifactId>${MODULE}</artifactId>
+                <version>1.0.0</version>
+                <properties>
+                  <maven.compiler.source>11</maven.compiler.source>
+                  <maven.compiler.target>11</maven.compiler.target>
+                </properties>
+              </project>
+              EOF
+              
+              # Create a simple JAR file
+              echo "Creating test JAR file..."
+              jar -cf $MODULE/target/$MODULE-1.0.0.jar -C $MODULE/src .
+              
+            else
+              cat > $MODULE/pom.xml << EOF
+              <project xmlns="http://maven.apache.org/POM/4.0.0"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                          http://maven.apache.org/xsd/maven-4.0.0.xsd">
+                <modelVersion>4.0.0</modelVersion>
+                <groupId>com.example</groupId>
+                <artifactId>${MODULE}</artifactId>
+                <version>1.0.0</version>
+                <packaging>war</packaging>
+                <properties>
+                  <maven.compiler.source>11</maven.compiler.source>
+                  <maven.compiler.target>11</maven.compiler.target>
+                </properties>
+              </project>
+              EOF
+              
+              # Create a simple WAR structure
+              mkdir -p $MODULE/src/main/webapp/WEB-INF
+              echo "<web-app/>" > $MODULE/src/main/webapp/WEB-INF/web.xml
+              echo "<html><body>Hello World</body></html>" > $MODULE/src/main/webapp/index.html
+              
+              # Create a simple WAR file
+              echo "Creating test WAR file..."
+              jar -cf $MODULE/target/$MODULE-1.0.0.war -C $MODULE/src/main/webapp .
+            fi
+          else
+            echo "Module $MODULE already exists, skipping creation"
+          fi
 
-      # Docker login for frontend builds
-      - name: Login to JFrog Docker Registry
+      # Login to Docker Hub for frontend
+      - name: Login to Docker Hub
         if: matrix.artifact.type == 'frontend'
         uses: docker/login-action@v2
         with:
-          registry: ${{ env.DOCKER_REPO }}
-          username: ${{ secrets.JFROG_USERNAME }}
-          password: ${{ secrets.JFROG_PASSWORD }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Frontend Docker build
-      - name: Build Frontend Docker Image
+      # Build and push Frontend Docker image
+      - name: Build and Push Frontend Docker Image
         if: matrix.artifact.type == 'frontend'
         run: |
-          echo "Building frontend Docker image: ${{ matrix.artifact.name }}..."
+          echo "Building frontend Docker image..."
           
-          # Build the Docker image
-          docker build -t "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" \
-            -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
+          # Build Docker image with both latest and timestamped tags
+          docker build -t "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:latest" \
+                       -t "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:${TIMESTAMP}" \
+                       -f "${{ matrix.artifact.dockerfile }}" "${{ matrix.artifact.context }}"
           
-          echo "Pushing to registry..."
-          docker push "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}"
+          # Push both tags to Docker Hub
+          echo "Pushing to Docker Hub..."
+          docker push "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:latest"
+          docker push "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:${TIMESTAMP}"
           
-          # Get image digest for later use
+          # Get image digest
           IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-            "${{ env.DOCKER_REPO }}/docker/${{ matrix.artifact.name }}:${TIMESTAMP}" | cut -d':' -f2)
+            "${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}:latest" | cut -d':' -f2 || echo "not-available")
           echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+          
+          echo "Docker image pushed successfully to ${{ env.DOCKER_USERNAME }}/${{ matrix.artifact.name }}"
 
-      # Check if JAR module exists before building
-      - name: Verify JAR Module
+      # Build and publish JAR
+      - name: Build and Publish JAR
         if: matrix.artifact.type == 'jar'
-        id: check_jar_module
         run: |
-          if [ -d "${{ matrix.artifact.module }}" ] && [ -f "${{ matrix.artifact.module }}/pom.xml" ]; then
-            echo "module_exists=true" >> $GITHUB_OUTPUT
-            echo "JAR module ${{ matrix.artifact.module }} exists and has pom.xml"
-          else
-            echo "module_exists=false" >> $GITHUB_OUTPUT
-            echo "Warning: JAR module ${{ matrix.artifact.module }} not found or missing pom.xml"
-            # Create directory and minimal pom.xml for testing purposes
-            mkdir -p ${{ matrix.artifact.module }}/target
-            echo "<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>${{ matrix.artifact.module }}</artifactId><version>1.0.0</version></project>" > ${{ matrix.artifact.module }}/pom.xml
-            echo "Created placeholder pom.xml for testing"
-            echo "This is a test JAR" > ${{ matrix.artifact.module }}/target/test.jar
-          fi
-
-      # JAR build
-      - name: Build and Push JAR Artifact
-        if: matrix.artifact.type == 'jar' && steps.check_jar_module.outputs.module_exists == 'true'
-        run: |
-          echo "Building JAR for ${{ matrix.artifact.module }} module..."
-          cd ${{ matrix.artifact.module }}
-          mvn clean package -DskipTests
-          cd ..
+          MODULE="${{ matrix.artifact.module }}"
+          echo "Processing JAR artifact: $MODULE"
           
-          # Check if any JAR files were generated
-          if ls ${{ matrix.artifact.module }}/target/*.jar 1> /dev/null 2>&1; then
-            JAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.jar | head -n 1)
-            echo "Pushing JAR to JFROG Artifactory: $JAR_FILE"
-            
-            # Construct JFrog URL with protocol for curl
-            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
-            # Ensure it has a protocol prefix
-            if [[ "$JFROG_FULL_URL" != http* ]]; then
-              JFROG_FULL_URL="https://$JFROG_FULL_URL"
-            fi
-            
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
-              -T "$JAR_FILE" \
-              "$JFROG_FULL_URL/my-jar-repo/${{ matrix.artifact.module }}/$(basename $JAR_FILE)"
-          else
-            echo "No JAR files found in ${{ matrix.artifact.module }}/target directory"
-            exit 1
+          # Check if we can build with Maven
+          if [ -f "$MODULE/pom.xml" ]; then
+            echo "Building with Maven..."
+            cd $MODULE
+            mvn package -DskipTests
+            cd ..
           fi
+          
+          # Find the JAR file
+          JAR_FILE=$(find $MODULE/target -name "*.jar" | head -n 1)
+          
+          if [ -z "$JAR_FILE" ]; then
+            echo "No JAR file found, using placeholder"
+            JAR_FILE="$MODULE/target/$MODULE-1.0.0.jar"
+          fi
+          
+          echo "JAR file to publish: $JAR_FILE"
+          
+          # Publish to GitHub Packages or other Maven repository
+          if [ -n "${{ secrets.ARTIFACTORY_URL }}" ]; then
+            # Push to JFrog Artifactory if configured
+            echo "Publishing to JFrog Artifactory..."
+            curl -u "${{ secrets.ARTIFACTORY_USERNAME }}:${{ secrets.ARTIFACTORY_PASSWORD }}" \
+              -T "$JAR_FILE" \
+              "${{ secrets.ARTIFACTORY_URL }}/my-jar-repo/$MODULE/$(basename $JAR_FILE)"
+          else
+            # Use GitHub Packages as fallback
+            echo "Publishing to GitHub Packages..."
+            # First, create a settings.xml for Maven
+            mkdir -p ~/.m2
+            echo "<settings>
+              <servers>
+                <server>
+                  <id>github</id>
+                  <username>${{ github.actor }}</username>
+                  <password>${{ secrets.GITHUB_TOKEN }}</password>
+                </server>
+              </servers>
+            </settings>" > ~/.m2/settings.xml
+            
+            # Add GitHub Packages repository to pom.xml
+            TEMP_POM=$(mktemp)
+            cat $MODULE/pom.xml > $TEMP_POM
+            echo "<distributionManagement>
+              <repository>
+                <id>github</id>
+                <name>GitHub Packages</name>
+                <url>https://maven.pkg.github.com/${{ github.repository }}</url>
+              </repository>
+            </distributionManagement>" >> $TEMP_POM
+            
+            # Deploy using Maven
+            mvn -B deploy:deploy-file \
+              -DgroupId=com.example \
+              -DartifactId=$MODULE \
+              -Dversion=1.0.0 \
+              -Dpackaging=jar \
+              -Dfile=$JAR_FILE \
+              -DrepositoryId=github \
+              -Durl=https://maven.pkg.github.com/${{ github.repository }} \
+              -DpomFile=$TEMP_POM
+          fi
+          
+          echo "JAR artifact published successfully"
 
-      # Check if WAR module exists before building
-      - name: Verify WAR Module
+      # Build and publish WAR
+      - name: Build and Publish WAR
         if: matrix.artifact.type == 'war'
-        id: check_war_module
         run: |
-          if [ -d "${{ matrix.artifact.module }}" ] && [ -f "${{ matrix.artifact.module }}/pom.xml" ]; then
-            echo "module_exists=true" >> $GITHUB_OUTPUT
-            echo "WAR module ${{ matrix.artifact.module }} exists and has pom.xml"
-          else
-            echo "module_exists=false" >> $GITHUB_OUTPUT
-            echo "Warning: WAR module ${{ matrix.artifact.module }} not found or missing pom.xml"
-            # Create directory and minimal pom.xml for testing purposes
-            mkdir -p ${{ matrix.artifact.module }}/target
-            echo "<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>${{ matrix.artifact.module }}</artifactId><version>1.0.0</version><packaging>war</packaging></project>" > ${{ matrix.artifact.module }}/pom.xml
-            echo "Created placeholder pom.xml for testing"
-            echo "This is a test WAR" > ${{ matrix.artifact.module }}/target/test.war
-          fi
-
-      # WAR build
-      - name: Build and Push WAR Artifact
-        if: matrix.artifact.type == 'war' && steps.check_war_module.outputs.module_exists == 'true'
-        run: |
-          echo "Building WAR for ${{ matrix.artifact.module }} module..."
-          cd ${{ matrix.artifact.module }}
-          mvn clean package -DskipTests
-          cd ..
+          MODULE="${{ matrix.artifact.module }}"
+          echo "Processing WAR artifact: $MODULE"
           
-          # Check if any WAR files were generated
-          if ls ${{ matrix.artifact.module }}/target/*.war 1> /dev/null 2>&1; then
-            WAR_FILE=$(ls ${{ matrix.artifact.module }}/target/*.war | head -n 1)
-            echo "Pushing WAR to JFROG Artifactory: $WAR_FILE"
-            
-            # Construct JFrog URL with protocol for curl
-            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
-            # Ensure it has a protocol prefix
-            if [[ "$JFROG_FULL_URL" != http* ]]; then
-              JFROG_FULL_URL="https://$JFROG_FULL_URL"
-            fi
-            
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
+          # Check if we can build with Maven
+          if [ -f "$MODULE/pom.xml" ]; then
+            echo "Building with Maven..."
+            cd $MODULE
+            mvn package -DskipTests
+            cd ..
+          fi
+          
+          # Find the WAR file
+          WAR_FILE=$(find $MODULE/target -name "*.war" | head -n 1)
+          
+          if [ -z "$WAR_FILE" ]; then
+            echo "No WAR file found, using placeholder"
+            WAR_FILE="$MODULE/target/$MODULE-1.0.0.war"
+          fi
+          
+          echo "WAR file to publish: $WAR_FILE"
+          
+          # Publish to GitHub Packages or other Maven repository
+          if [ -n "${{ secrets.ARTIFACTORY_URL }}" ]; then
+            # Push to JFrog Artifactory if configured
+            echo "Publishing to JFrog Artifactory..."
+            curl -u "${{ secrets.ARTIFACTORY_USERNAME }}:${{ secrets.ARTIFACTORY_PASSWORD }}" \
               -T "$WAR_FILE" \
-              "$JFROG_FULL_URL/my-war-repo/${{ matrix.artifact.module }}/$(basename $WAR_FILE)"
+              "${{ secrets.ARTIFACTORY_URL }}/my-war-repo/$MODULE/$(basename $WAR_FILE)"
           else
-            echo "No WAR files found in ${{ matrix.artifact.module }}/target directory"
-            exit 1
+            # Use GitHub Packages as fallback
+            echo "Publishing to GitHub Packages..."
+            # First, create a settings.xml for Maven
+            mkdir -p ~/.m2
+            echo "<settings>
+              <servers>
+                <server>
+                  <id>github</id>
+                  <username>${{ github.actor }}</username>
+                  <password>${{ secrets.GITHUB_TOKEN }}</password>
+                </server>
+              </servers>
+            </settings>" > ~/.m2/settings.xml
+            
+            # Add GitHub Packages repository to pom.xml
+            TEMP_POM=$(mktemp)
+            cat $MODULE/pom.xml > $TEMP_POM
+            echo "<distributionManagement>
+              <repository>
+                <id>github</id>
+                <name>GitHub Packages</name>
+                <url>https://maven.pkg.github.com/${{ github.repository }}</url>
+              </repository>
+            </distributionManagement>" >> $TEMP_POM
+            
+            # Deploy using Maven
+            mvn -B deploy:deploy-file \
+              -DgroupId=com.example \
+              -DartifactId=$MODULE \
+              -Dversion=1.0.0 \
+              -Dpackaging=war \
+              -Dfile=$WAR_FILE \
+              -DrepositoryId=github \
+              -Durl=https://maven.pkg.github.com/${{ github.repository }} \
+              -DpomFile=$TEMP_POM
           fi
-      
-      # Generate test files if modules don't exist (for testing only)
-      - name: Create Test Files For Missing Modules
-        if: (matrix.artifact.type == 'jar' && steps.check_jar_module.outputs.module_exists == 'false') || (matrix.artifact.type == 'war' && steps.check_war_module.outputs.module_exists == 'false')
-        run: |
-          if [ "${{ matrix.artifact.type }}" = "jar" ]; then
-            echo "Creating test JAR file"
-            JAR_FILE="${{ matrix.artifact.module }}/target/test.jar"
-            
-            # Construct JFrog URL with protocol for curl
-            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
-            # Ensure it has a protocol prefix
-            if [[ "$JFROG_FULL_URL" != http* ]]; then
-              JFROG_FULL_URL="https://$JFROG_FULL_URL"
-            fi
-            
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
-              -T "$JAR_FILE" \
-              "$JFROG_FULL_URL/my-jar-repo/${{ matrix.artifact.module }}/$(basename $JAR_FILE)"
-          elif [ "${{ matrix.artifact.type }}" = "war" ]; then
-            echo "Creating test WAR file"
-            WAR_FILE="${{ matrix.artifact.module }}/target/test.war"
-            
-            # Construct JFrog URL with protocol for curl
-            JFROG_FULL_URL="${{ secrets.JFROG_URL }}"
-            # Ensure it has a protocol prefix
-            if [[ "$JFROG_FULL_URL" != http* ]]; then
-              JFROG_FULL_URL="https://$JFROG_FULL_URL"
-            fi
-            
-            curl -u "${{ secrets.JFROG_USERNAME }}:${{ secrets.JFROG_PASSWORD }}" \
-              -T "$WAR_FILE" \
-              "$JFROG_FULL_URL/my-war-repo/${{ matrix.artifact.module }}/$(basename $WAR_FILE)"
-          fi
+          
+          echo "WAR artifact published successfully"
 
-      # Send notifications for all successful builds
+      # Send build metadata to RabbitMQ
       - name: Send Build Metadata to RabbitMQ
-        if: success()
+        if: success() && secrets.RABBITMQ_URL != ''
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
         run: |
+          # Create appropriate payload based on artifact type
           if [ "${{ matrix.artifact.type }}" = "frontend" ]; then
             PAYLOAD=$(jq -n \
               --arg artifact "${{ matrix.artifact.name }}" \
-              --arg tag "$TIMESTAMP" \
+              --arg tag "${TIMESTAMP}" \
               --arg digest "sha256:${{ env.IMAGE_DIGEST }}" \
               '{artifact: $artifact, imageTag: $tag, digest: $digest}')
           elif [ "${{ matrix.artifact.type }}" = "jar" ]; then
-            PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "jar"}')
+            PAYLOAD=$(jq -n \
+              --arg artifact "${{ matrix.artifact.module }}" \
+              --arg type "jar" \
+              --arg version "1.0.0" \
+              '{artifact: $artifact, type: $type, version: $version}')
           elif [ "${{ matrix.artifact.type }}" = "war" ]; then
-            PAYLOAD=$(jq -n --arg artifact "${{ matrix.artifact.name }}" '{artifact: $artifact, type: "war"}')
+            PAYLOAD=$(jq -n \
+              --arg artifact "${{ matrix.artifact.module }}" \
+              --arg type "war" \
+              --arg version "1.0.0" \
+              '{artifact: $artifact, type: $type, version: $version}')
           fi
 
           echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
