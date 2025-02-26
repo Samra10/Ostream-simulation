@@ -226,83 +226,129 @@ jobs:
           MODULE="${{ matrix.module }}"
           TYPE="${{ matrix.type }}"
           
-          # Create module directory if it doesn't exist
-          if [ ! -d "$MODULE" ]; then
-            echo "Creating test module: $MODULE"
-            mkdir -p $MODULE/src/main/java/com/example
-            mkdir -p $MODULE/target
+          echo "Current directory: $(pwd)"
+          echo "Creating test module: $MODULE"
+          
+          # Create all directories in one step and verify
+          mkdir -p "$MODULE/target"
+          if [ ! -d "$MODULE/target" ]; then
+            echo "ERROR: Failed to create directory structure"
+            exit 1
           fi
           
-          # Create a simple Java file
-          echo "package com.example;" > $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "" >> $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "public class HelloWorld {" >> $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "    public static void main(String[] args) {" >> $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "        System.out.println(\"Hello, World!\");" >> $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "    }" >> $MODULE/src/main/java/com/example/HelloWorld.java
-          echo "}" >> $MODULE/src/main/java/com/example/HelloWorld.java
+          # Create minimal POM file
+          cat > "$MODULE/pom.xml" << EOF
+          <project>
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.example</groupId>
+            <artifactId>$MODULE</artifactId>
+            <version>1.0.0</version>
+            $([ "$TYPE" = "war" ] && echo "  <packaging>war</packaging>")
+          </project>
+          EOF
           
-          # Create appropriate POM file
-          echo "<project>" > $MODULE/pom.xml
-          echo "  <modelVersion>4.0.0</modelVersion>" >> $MODULE/pom.xml
-          echo "  <groupId>com.example</groupId>" >> $MODULE/pom.xml
-          echo "  <artifactId>$MODULE</artifactId>" >> $MODULE/pom.xml
-          echo "  <version>1.0.0</version>" >> $MODULE/pom.xml
-          
-          if [ "$TYPE" = "war" ]; then
-            echo "  <packaging>war</packaging>" >> $MODULE/pom.xml
-            
-            # Create web app structure for WAR
-            mkdir -p $MODULE/src/main/webapp/WEB-INF
-            echo "<web-app/>" > $MODULE/src/main/webapp/WEB-INF/web.xml
-            echo "<html><body>Hello World</body></html>" > $MODULE/src/main/webapp/index.html
-          fi
-          
-          echo "</project>" >> $MODULE/pom.xml
-          
-          # Create placeholder files
+          # Create placeholder artifact file directly
           if [ "$TYPE" = "jar" ]; then
-            echo "Creating placeholder JAR file"
-            echo "Placeholder JAR content" > $MODULE/target/$MODULE-1.0.0.jar
+            echo "Creating placeholder JAR"
+            echo "Placeholder JAR content for $MODULE" > "$MODULE/target/$MODULE-1.0.0.jar"
           else
-            echo "Creating placeholder WAR file"
-            echo "Placeholder WAR content" > $MODULE/target/$MODULE-1.0.0.war
+            echo "Creating placeholder WAR"
+            echo "Placeholder WAR content for $MODULE" > "$MODULE/target/$MODULE-1.0.0.war"
           fi
+          
+          echo "Successfully created test $TYPE module: $MODULE"
+          echo "Files created:"
+          find "$MODULE" -type f | sort
       
       - name: Build Java Artifact
         run: |
           MODULE="${{ matrix.module }}"
           TYPE="${{ matrix.type }}"
           
-          echo "Building $TYPE artifact: $MODULE"
+          echo "Building $TYPE for module: $MODULE"
           
-          # Try to build with Maven
+          # Check if pom.xml exists
           if [ -f "$MODULE/pom.xml" ]; then
+            echo "Found existing pom.xml - attempting Maven build"
             cd $MODULE
-            mvn package -DskipTests || echo "Maven build failed, using placeholder"
+            
+            # Create target directory if it doesn't exist
+            mkdir -p target
+            
+            # Try Maven build
+            mvn package -DskipTests || echo "Maven build failed, will use placeholder"
             cd ..
+          else
+            echo "No pom.xml found, creating minimal structure"
+            mkdir -p "$MODULE/target"
+            
+            # Create minimal pom.xml
+            echo "<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>$MODULE</artifactId><version>1.0.0</version></project>" > "$MODULE/pom.xml"
           fi
           
-          # Locate the built artifact
+          # Check if build produced artifacts
           if [ "$TYPE" = "jar" ]; then
-            ARTIFACT=$(find $MODULE/target -name "*.jar" | head -n 1)
+            ARTIFACT=$(find $MODULE/target -name "*.jar" 2>/dev/null | head -n 1)
             if [ -z "$ARTIFACT" ]; then
-              echo "Creating placeholder JAR file"
-              echo "Placeholder JAR content" > $MODULE/target/$MODULE-1.0.0.jar
+              echo "No JAR found, creating placeholder"
+              echo "Placeholder JAR content" > "$MODULE/target/$MODULE-1.0.0.jar"
               ARTIFACT="$MODULE/target/$MODULE-1.0.0.jar"
             fi
           else
-            ARTIFACT=$(find $MODULE/target -name "*.war" | head -n 1)
+            ARTIFACT=$(find $MODULE/target -name "*.war" 2>/dev/null | head -n 1)
             if [ -z "$ARTIFACT" ]; then
-              echo "Creating placeholder WAR file"
-              echo "Placeholder WAR content" > $MODULE/target/$MODULE-1.0.0.war
+              echo "No WAR found, creating placeholder"
+              echo "Placeholder WAR content" > "$MODULE/target/$MODULE-1.0.0.war"
               ARTIFACT="$MODULE/target/$MODULE-1.0.0.war"
             fi
           fi
           
-          echo "Built artifact: $ARTIFACT"
+          echo "Artifact to upload: $ARTIFACT"
           echo "ARTIFACT_PATH=$ARTIFACT" >> $GITHUB_ENV
-      
+          
+      - name: Push to JFrog Artifactory
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+        run: |
+          MODULE="${{ matrix.module }}"
+          TYPE="${{ matrix.type }}"
+          ARTIFACT="${{ env.ARTIFACT_PATH }}"
+          
+          # Skip if no credentials
+          if [ -z "$JFROG_USERNAME" ] || [ -z "$JFROG_PASSWORD" ] || [ -z "$JFROG_URL" ]; then
+            echo "JFrog credentials not provided, skipping push"
+            exit 0
+          fi
+          
+          # Ensure URL has protocol
+          if [[ "$JFROG_URL" != http* ]]; then
+            JFROG_URL="https://$JFROG_URL"
+          fi
+          
+          # Add /artifactory if needed
+          if [[ "$JFROG_URL" != */artifactory ]]; then
+            JFROG_URL="$JFROG_URL/artifactory"
+          fi
+          
+          # Use appropriate repository based on type
+          if [ "$TYPE" = "jar" ]; then
+            REPO="my-jar-repo"
+          else
+            REPO="my-war-repo"
+          fi
+          
+          echo "Pushing $TYPE to JFrog Artifactory: $ARTIFACT"
+          curl -u "$JFROG_USERNAME:$JFROG_PASSWORD" \
+               -T "$ARTIFACT" \
+               "$JFROG_URL/$REPO/$MODULE/$(basename $ARTIFACT)"
+          
+          if [ $? -eq 0 ]; then
+            echo "Successfully pushed $TYPE to JFrog Artifactory"
+          else
+            echo "Failed to push $TYPE to JFrog Artifactory"
+          fi
       - name: Push to JFrog Artifactory
         env:
           JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
