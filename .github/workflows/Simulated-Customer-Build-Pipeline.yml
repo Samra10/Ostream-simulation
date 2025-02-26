@@ -328,14 +328,57 @@ jobs:
           echo "WAR artifact published successfully"
 
       # Send build metadata to RabbitMQ
+# Step 1: Create RabbitMQ Infrastructure
+      - name: Setup RabbitMQ Exchange and Queue
+        if: success()
+        env:
+          RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
+          RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+          RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
+          RABBITMQ_QUEUE: "githubactions-ssd"
+          RABBITMQ_EXCHANGE: "githubactions.events"
+          RABBITMQ_ROUTING_KEY: "githubactions-ssd"
+        run: |
+          # Check if RabbitMQ credentials are set
+          if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
+            echo "RabbitMQ credentials not fully configured, skipping setup"
+            exit 0
+          fi
+          
+          echo "Setting up RabbitMQ exchanges and queues..."
+          
+          # Create the exchange
+          echo "Creating exchange: $RABBITMQ_EXCHANGE"
+          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE" \
+               -d '{"type":"direct","durable":true}'
+          
+          # Create the queue
+          echo "Creating queue: $RABBITMQ_QUEUE"
+          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X PUT "$RABBITMQ_URL/api/queues/%2F/$RABBITMQ_QUEUE" \
+               -d '{"durable":true}'
+          
+          # Bind the queue to the exchange with the routing key
+          echo "Binding queue to exchange with key: $RABBITMQ_ROUTING_KEY"
+          curl -u $RABBITMQ_USER:$RABBITMQ_PASS \
+               -H "Content-Type: application/json" \
+               -X POST "$RABBITMQ_URL/api/bindings/%2F/e/$RABBITMQ_EXCHANGE/q/$RABBITMQ_QUEUE" \
+               -d '{"routing_key":"'$RABBITMQ_ROUTING_KEY'"}'
+
+      # Step 2: Send the actual notification
       - name: Send Build Metadata to RabbitMQ
         if: success()
         env:
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
-          RABBITMQ_EXCHANGE: "build-events" # Change this if you have a specific exchange
-          RABBITMQ_ROUTING_KEY: "build.event" # Change this if you have a specific routing key
+          RABBITMQ_QUEUE: "githubactions-ssd"
+          RABBITMQ_EXCHANGE: "githubactions.events"
+          RABBITMQ_ROUTING_KEY: "githubactions-ssd"
+          ORG_NAME: "opsmx"
         run: |
           # Check if RabbitMQ credentials are set
           if [ -z "$RABBITMQ_URL" ] || [ -z "$RABBITMQ_USER" ] || [ -z "$RABBITMQ_PASS" ]; then
@@ -365,7 +408,7 @@ jobs:
               --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
               --arg buildUser "${{ github.actor }}" \
               --arg visibility "public" \
-              --arg organization "Samra10" \
+              --arg organization "$ORG_NAME" \
               --arg workflowName "Simulated Customer Build Pipeline" \
               '{
                 image: $image,
@@ -401,7 +444,7 @@ jobs:
               --arg jobUrl "$JOB_URL" \
               --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
               --arg buildUser "${{ github.actor }}" \
-              --arg organization "Samra10" \
+              --arg organization "$ORG_NAME" \
               --arg workflowName "Simulated Customer Build Pipeline" \
               '{
                 artifact: $artifact,
@@ -435,7 +478,7 @@ jobs:
               --arg jobUrl "$JOB_URL" \
               --arg buildTime "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
               --arg buildUser "${{ github.actor }}" \
-              --arg organization "Samra10" \
+              --arg organization "$ORG_NAME" \
               --arg workflowName "Simulated Customer Build Pipeline" \
               '{
                 artifact: $artifact,
@@ -477,6 +520,8 @@ jobs:
               }')
           
           echo "Sending build event to RabbitMQ for artifact: ${{ matrix.artifact.name }}"
+          echo "Using exchange: $RABBITMQ_EXCHANGE, routing key: $RABBITMQ_ROUTING_KEY"
+          
           curl -v -u $RABBITMQ_USER:$RABBITMQ_PASS \
               -H "Content-Type: application/json" \
               -X POST "$RABBITMQ_URL/api/exchanges/%2F/$RABBITMQ_EXCHANGE/publish" \
